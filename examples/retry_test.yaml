@@ -1,0 +1,14 @@
+name: retry test
+initial_state: start
+steps:
+  - name: login
+    method: POST
+    url: http://localhost:3000/login
+    retry:
+      attempts: 3
+      delay_ms: 500
+    extract:
+      token: "token"
+    transition:
+      from: start
+      to: logged_in

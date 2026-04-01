@@ -1,0 +1,4 @@
+﻿target/
+Cargo.lock
+.env
+execution_log.json

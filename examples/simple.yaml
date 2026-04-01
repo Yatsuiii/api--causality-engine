@@ -1,0 +1,16 @@
+name: simple scenario
+initial_state: start
+concurrency: 3
+steps:
+  - name: list users
+    method: GET
+    url: https://jsonplaceholder.typicode.com/users
+    transition:
+      from: start
+      to: users_listed
+  - name: get first user
+    method: GET
+    url: https://jsonplaceholder.typicode.com/users/1
+    transition:
+      from: users_listed
+      to: done

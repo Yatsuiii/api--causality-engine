@@ -1,0 +1,17 @@
+name: token flow
+initial_state: start
+steps:
+  - name: login
+    method: POST
+    url: https://jsonplaceholder.typicode.com/posts
+    extract:
+      id: "id"
+    transition:
+      from: start
+      to: logged_in
+  - name: profile
+    method: GET
+    url: https://jsonplaceholder.typicode.com/posts/{{id}}
+    transition:
+      from: logged_in
+      to: logged_in

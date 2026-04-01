@@ -1,0 +1,21 @@
+name: login flow
+initial_state: start
+concurrency: 3
+steps:
+  - name: login
+    method: POST
+    url: https://jsonplaceholder.typicode.com/posts
+    transition:
+      from: start
+      to: authenticated
+    extract:
+      post_id: "id"
+  - name: get profile
+    method: GET
+    url: https://jsonplaceholder.typicode.com/users/1
+    transition:
+      from: authenticated
+      to: done
+    extract:
+      username: "username"
+      email: "email"
