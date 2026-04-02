@@ -29,34 +29,37 @@ export default function Editor({
 }: EditorProps) {
   const [showMeta, setShowMeta] = useState(false);
 
+  const stepsList = scenario.steps || [];
+  const initialState = scenario.initial_state || "start";
+
   const updateStep = (index: number, step: Step) => {
-    const steps = [...scenario.steps];
+    const steps = [...stepsList];
     steps[index] = step;
     onScenarioChange({ ...scenario, steps });
   };
 
   const deleteStep = (index: number) => {
-    const steps = scenario.steps.filter((_, i) => i !== index);
+    const steps = stepsList.filter((_, i) => i !== index);
     onScenarioChange({ ...scenario, steps });
   };
 
   const addStep = () => {
     const lastState =
-      scenario.steps.length > 0
-        ? scenario.steps[scenario.steps.length - 1].transition.to
-        : scenario.initial_state;
+      stepsList.length > 0
+        ? stepsList[stepsList.length - 1].transition.to
+        : initialState;
     const newStep: Step = {
-      name: `step ${scenario.steps.length + 1}`,
+      name: `step ${stepsList.length + 1}`,
       method: "GET",
       url: "",
       transition: { from: lastState, to: "done" },
     };
-    onScenarioChange({ ...scenario, steps: [...scenario.steps, newStep] });
+    onScenarioChange({ ...scenario, steps: [...stepsList, newStep] });
   };
 
   const moveStep = (from: number, to: number) => {
-    if (to < 0 || to >= scenario.steps.length) return;
-    const steps = [...scenario.steps];
+    if (to < 0 || to >= stepsList.length) return;
+    const steps = [...stepsList];
     const [removed] = steps.splice(from, 1);
     steps.splice(to, 0, removed);
     onScenarioChange({ ...scenario, steps });
@@ -64,8 +67,8 @@ export default function Editor({
 
   /* ── State machine nodes ─────────────────────────────────────────── */
   const stateNodes = new Set<string>();
-  stateNodes.add(scenario.initial_state);
-  scenario.steps.forEach((s) => {
+  stateNodes.add(initialState);
+  stepsList.forEach((s) => {
     stateNodes.add(s.transition.from);
     stateNodes.add(s.transition.to);
   });
@@ -154,7 +157,7 @@ export default function Editor({
                 Initial State
               </label>
               <input
-                value={scenario.initial_state}
+                value={initialState}
                 onChange={(e) =>
                   onScenarioChange({
                     ...scenario,
@@ -233,7 +236,7 @@ export default function Editor({
               <span key={state} className="flex items-center gap-1.5 shrink-0">
                 <span
                   className={`px-2 py-0.5 text-[0.65rem] font-mono rounded-full border ${
-                    state === scenario.initial_state
+                    state === initialState
                       ? "border-accent/40 bg-accent/10 text-accent"
                       : state === "done"
                       ? "border-success/40 bg-success/10 text-success"
@@ -255,12 +258,12 @@ export default function Editor({
       <div className="flex-1 overflow-y-auto">
         {editorMode === "visual" ? (
           <div className="p-4 space-y-3 stagger">
-            {scenario.steps.map((step, i) => (
+            {stepsList.map((step, i) => (
               <StepEditor
                 key={i}
                 step={step}
                 index={i}
-                total={scenario.steps.length}
+                total={stepsList.length}
                 onChange={(s) => updateStep(i, s)}
                 onDelete={() => deleteStep(i)}
                 onMoveUp={() => moveStep(i, i - 1)}
