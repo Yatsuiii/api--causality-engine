@@ -1,0 +1,89 @@
+name: full API test suite
+initial_state: start
+concurrency: 2
+variables:
+  base_url: https://jsonplaceholder.typicode.com
+steps:
+  - name: create post
+    method: POST
+    url: "{{base_url}}/posts"
+    headers:
+      Content-Type: application/json
+      X-Request-Id: "{{$uuid}}"
+    body:
+      title: "ACE Test Post"
+      body: "Created by API Causality Engine"
+      userId: 1
+    timeout_ms: 10000
+    assert:
+      - status: 201
+      - body:
+          id:
+            exists: true
+          title:
+            eq: "ACE Test Post"
+      - response_time_ms:
+          lt: 5000
+    extract:
+      post_id: "id"
+    transition:
+      from: start
+      to: created
+
+  - name: get created post
+    method: GET
+    url: "{{base_url}}/posts/1"
+    assert:
+      - status: 200
+      - body:
+          userId:
+            exists: true
+          title:
+            exists: true
+      - header:
+          content-type:
+            contains: "json"
+    extract:
+      user_id: "userId"
+    transition:
+      from: created
+      to: verified
+
+  - name: update post
+    method: PUT
+    url: "{{base_url}}/posts/1"
+    headers:
+      Content-Type: application/json
+    body:
+      id: 1
+      title: "Updated by ACE"
+      body: "Modified content"
+      userId: 1
+    assert:
+      - status: 200
+      - body:
+          title:
+            eq: "Updated by ACE"
+    transition:
+      from: verified
+      to: updated
+
+  - name: list user posts
+    method: GET
+    url: "{{base_url}}/users/{{user_id}}/posts"
+    assert:
+      - status: 200
+      - response_time_ms:
+          lt: 5000
+    transition:
+      from: updated
+      to: listed
+
+  - name: delete post
+    method: DELETE
+    url: "{{base_url}}/posts/1"
+    assert:
+      - status: 200
+    transition:
+      from: listed
+      to: done

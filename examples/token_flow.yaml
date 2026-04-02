@@ -1,17 +1,31 @@
 name: token flow
 initial_state: start
 steps:
-  - name: login
+  - name: create post
     method: POST
     url: https://jsonplaceholder.typicode.com/posts
+    headers:
+      Content-Type: application/json
+    body:
+      title: "Test Post"
+      body: "Hello World"
+      userId: 1
+    assert:
+      - status: 201
     extract:
       id: "id"
     transition:
       from: start
       to: logged_in
-  - name: profile
+
+  - name: get post
     method: GET
-    url: https://jsonplaceholder.typicode.com/posts/{{id}}
+    url: https://jsonplaceholder.typicode.com/posts/1
+    assert:
+      - status: 200
+      - body:
+          id:
+            exists: true
     transition:
       from: logged_in
-      to: logged_in
+      to: done

@@ -5,17 +5,35 @@ steps:
   - name: login
     method: POST
     url: https://jsonplaceholder.typicode.com/posts
+    headers:
+      Content-Type: application/json
+    body:
+      title: "Login Request"
+      body: "credentials"
+      userId: 1
+    assert:
+      - status: 201
+    extract:
+      post_id: "id"
     transition:
       from: start
       to: authenticated
-    extract:
-      post_id: "id"
+
   - name: get profile
     method: GET
     url: https://jsonplaceholder.typicode.com/users/1
-    transition:
-      from: authenticated
-      to: done
+    assert:
+      - status: 200
+      - body:
+          username:
+            exists: true
+          email:
+            contains: "@"
+      - response_time_ms:
+          lt: 5000
     extract:
       username: "username"
       email: "email"
+    transition:
+      from: authenticated
+      to: done

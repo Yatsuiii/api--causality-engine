@@ -3,12 +3,19 @@ initial_state: start
 steps:
   - name: login
     method: POST
-    url: http://localhost:3000/login
+    url: https://jsonplaceholder.typicode.com/posts
+    headers:
+      Content-Type: application/json
+    body:
+      title: "Auth Request"
+      userId: 1
     retry:
       attempts: 3
       delay_ms: 500
+    assert:
+      - status: 201
     extract:
-      token: "token"
+      token: "id"
     transition:
       from: start
       to: logged_in
