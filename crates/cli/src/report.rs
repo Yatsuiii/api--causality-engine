@@ -182,8 +182,7 @@ pub fn write_junit_report(
             let time_s = step.duration_ms as f64 / 1000.0;
             total_time += time_s;
 
-            let failed_assertions: Vec<_> =
-                step.assertions.iter().filter(|a| !a.passed).collect();
+            let failed_assertions: Vec<_> = step.assertions.iter().filter(|a| !a.passed).collect();
 
             if failed_assertions.is_empty() {
                 testcases.push(format!(
