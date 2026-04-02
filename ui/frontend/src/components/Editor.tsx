@@ -28,13 +28,11 @@ export default function Editor({
   onYamlChange,
 }: EditorProps) {
   const [showMeta, setShowMeta] = useState(false);
-
-  const stepsList = scenario.steps || [];
-  const initialState = scenario.initial_state || "start";
+  const stepsList: Step[] = scenario?.steps ?? [];
+  const initialState = scenario?.initial_state ?? "start";
 
   const updateStep = (index: number, step: Step) => {
-    const steps = [...stepsList];
-    steps[index] = step;
+    const steps = stepsList.map((s: Step, i: number) => (i === index ? step : s));
     onScenarioChange({ ...scenario, steps });
   };
 
@@ -260,7 +258,7 @@ export default function Editor({
           <div className="p-4 space-y-3 stagger">
             {stepsList.map((step, i) => (
               <StepEditor
-                key={i}
+                key={`${step.name}-${i}`}
                 step={step}
                 index={i}
                 total={stepsList.length}
