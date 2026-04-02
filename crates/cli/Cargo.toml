@@ -1,10 +1,23 @@
 [package]
-name = "cli"
+name = "ace"
 version = "0.1.0"
 edition = "2024"
+description = "API Causality Engine — stateful API workflow testing"
+
+[[bin]]
+name = "ace"
+path = "src/main.rs"
 
 [dependencies]
 model = { path = "../model" }
 runner = { path = "../runner" }
+ace-core = { path = "../core" }
+ace-http = { path = "../http" }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+clap = { version = "4", features = ["derive"] }
+colored = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"

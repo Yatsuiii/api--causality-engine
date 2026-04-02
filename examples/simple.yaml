@@ -1,16 +1,25 @@
-name: simple scenario
+name: simple flow
 initial_state: start
-concurrency: 3
 steps:
   - name: list users
     method: GET
     url: https://jsonplaceholder.typicode.com/users
+    assert:
+      - status: 200
+      - response_time_ms:
+          lt: 5000
     transition:
       from: start
-      to: users_listed
+      to: fetched
+
   - name: get first user
     method: GET
     url: https://jsonplaceholder.typicode.com/users/1
+    assert:
+      - status: 200
+      - body:
+          name:
+            exists: true
     transition:
-      from: users_listed
+      from: fetched
       to: done

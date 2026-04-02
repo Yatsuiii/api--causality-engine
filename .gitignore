@@ -1,4 +1,20 @@
-﻿target/
-Cargo.lock
+target/
 .env
 execution_log.json
+report.xml
+report.json
+*.xml
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
