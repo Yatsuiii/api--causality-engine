@@ -90,6 +90,16 @@ export interface Scenario {
   default_timeout_ms?: number;
 }
 
+export function isScenario(value: unknown): value is Scenario {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.name === "string" &&
+    typeof obj.initial_state === "string" &&
+    Array.isArray(obj.steps)
+  );
+}
+
 /* ── Execution Results ───────────────────────────────────────────── */
 
 export interface AssertionResult {

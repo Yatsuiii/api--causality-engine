@@ -133,7 +133,7 @@ export default function StepEditor({
               <span>Request Body (JSON)</span>
             </label>
             <textarea
-              value={typeof step.body === 'object' ? JSON.stringify(step.body, null, 2) : (step.body as string || '')}
+              value={typeof step.body === 'object' && step.body !== null ? JSON.stringify(step.body, null, 2) : (typeof step.body === 'string' ? step.body : '')}
               onChange={(e) => {
                 try {
                   const val = e.target.value;

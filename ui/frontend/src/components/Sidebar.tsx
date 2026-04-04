@@ -201,7 +201,9 @@ export default function Sidebar({
             <button
               className="w-full text-left px-3 py-1.5 text-xs text-error hover:bg-error/10 flex items-center gap-2 transition-colors"
               onClick={() => {
-                onDelete(contextMenu.file);
+                if (window.confirm(`Delete "${contextMenu.file}"? This cannot be undone.`)) {
+                  onDelete(contextMenu.file);
+                }
                 setContextMenu(null);
               }}
             >
