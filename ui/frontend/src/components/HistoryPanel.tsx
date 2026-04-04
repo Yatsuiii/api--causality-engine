@@ -1,8 +1,9 @@
-import { X, Trash2, Clock, CheckCircle2, XCircle } from "lucide-react";
+import { X, Trash2, Clock, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import type { HistoryEntry } from "../types";
 
 interface HistoryPanelProps {
   history: HistoryEntry[];
+  loading?: boolean;
   onClose: () => void;
   onSelect: (entry: HistoryEntry) => void;
   onDelete: (id: string) => void;
@@ -11,6 +12,7 @@ interface HistoryPanelProps {
 
 export default function HistoryPanel({
   history,
+  loading,
   onClose,
   onSelect,
   onDelete,
@@ -40,7 +42,11 @@ export default function HistoryPanel({
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-2">
-        {history.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center mt-10">
+            <Loader2 size={20} className="animate-spin text-text-muted" />
+          </div>
+        ) : history.length === 0 ? (
           <div className="text-center text-text-muted text-xs mt-10">
             No run history yet.
           </div>

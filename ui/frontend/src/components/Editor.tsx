@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import {
   Code2,
   LayoutGrid,
@@ -31,15 +31,27 @@ export default function Editor({
   const stepsList: Step[] = scenario?.steps ?? [];
   const initialState = scenario?.initial_state ?? "start";
 
+  /* ── Stable keys for steps (survives reorder) ─────────────────── */
+  const nextKeyId = useRef(0);
+  const stepKeysRef = useRef<string[]>([]);
+  // Sync key count with steps — only append/trim, never regenerate
+  while (stepKeysRef.current.length < stepsList.length) {
+    stepKeysRef.current.push(`step-key-${++nextKeyId.current}`);
+  }
+  if (stepKeysRef.current.length > stepsList.length) {
+    stepKeysRef.current.length = stepsList.length;
+  }
+
   const updateStep = (index: number, step: Step) => {
     const steps = stepsList.map((s: Step, i: number) => (i === index ? step : s));
     onScenarioChange({ ...scenario, steps });
   };
 
-  const deleteStep = (index: number) => {
+  const deleteStep = useCallback((index: number) => {
     const steps = stepsList.filter((_, i) => i !== index);
+    stepKeysRef.current.splice(index, 1);
     onScenarioChange({ ...scenario, steps });
-  };
+  }, [stepsList, scenario, onScenarioChange]);
 
   const addStep = () => {
     const lastState =
@@ -52,6 +64,7 @@ export default function Editor({
       url: "",
       transition: { from: lastState, to: "done" },
     };
+    stepKeysRef.current.push(`step-key-${++nextKeyId.current}`);
     onScenarioChange({ ...scenario, steps: [...stepsList, newStep] });
   };
 
@@ -60,6 +73,11 @@ export default function Editor({
     const steps = [...stepsList];
     const [removed] = steps.splice(from, 1);
     steps.splice(to, 0, removed);
+    // Reorder keys to match
+    const keys = [...stepKeysRef.current];
+    const [removedKey] = keys.splice(from, 1);
+    keys.splice(to, 0, removedKey);
+    stepKeysRef.current = keys;
     onScenarioChange({ ...scenario, steps });
   };
 
@@ -258,7 +276,7 @@ export default function Editor({
           <div className="p-4 space-y-3 stagger">
             {stepsList.map((step, i) => (
               <StepEditor
-                key={`${step.name}-${i}`}
+                key={stepKeysRef.current[i]}
                 step={step}
                 index={i}
                 total={stepsList.length}

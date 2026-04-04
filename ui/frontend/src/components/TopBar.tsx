@@ -46,7 +46,7 @@ export default function TopBar({
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (envRef.current && !envRef.current.contains(e.target as Node)) {
+      if (envRef.current && e.target instanceof Node && !envRef.current.contains(e.target)) {
         setEnvOpen(false);
       }
     };

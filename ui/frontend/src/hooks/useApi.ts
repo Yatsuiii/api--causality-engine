@@ -11,38 +11,37 @@ import type {
 } from "../types";
 
 const BASE = "/api";
+const DEFAULT_TIMEOUT_MS = 30_000;
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...init?.headers },
-    ...init,
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`${res.status}: ${body}`);
+async function request<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...fetchInit } = init ?? {};
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      headers: { "Content-Type": "application/json", ...fetchInit?.headers },
+      ...fetchInit,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`${res.status}: ${body}`);
+    }
+    return res.json();
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error(`Request to ${path} timed out after ${timeoutMs}ms`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeout);
   }
-  return res.json();
 }
 
 /* ── Health ───────────────────────────────────────────────────────── */
 
 export async function checkHealth(): Promise<{ status: string }> {
   return request("/health");
-}
-
-/* ── Workspace ───────────────────────────────────────────────────── */
-
-export async function getWorkspace(): Promise<{ workspace: string }> {
-  return request("/workspace");
-}
-
-export async function setWorkspace(
-  path: string
-): Promise<{ workspace: string }> {
-  return request("/workspace", {
-    method: "POST",
-    body: JSON.stringify({ path }),
-  });
 }
 
 /* ── Scenarios ───────────────────────────────────────────────────── */
