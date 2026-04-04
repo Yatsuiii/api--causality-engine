@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { ScenarioListItem, Scenario, HistoryEntry, Environment } from "./types";
+import { isScenario } from "./types";
 import * as api from "./hooks/useApi";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
@@ -9,6 +10,14 @@ import HistoryPanel from "./components/HistoryPanel";
 import EnvManager from "./components/EnvManager";
 
 export type RightPanel = "none" | "history" | "environments";
+
+/* ── Toast notification ────────────────────────────────────────────── */
+interface Toast {
+  id: number;
+  message: string;
+  type: "error" | "success";
+}
+let toastId = 0;
 
 export default function App() {
   /* ── State ───────────────────────────────────────────────────────── */
@@ -27,9 +36,17 @@ export default function App() {
 
   const [rightPanel, setRightPanel] = useState<RightPanel>("none");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const [backendOnline, setBackendOnline] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const notify = useCallback((message: string, type: "error" | "success" = "error") => {
+    const id = ++toastId;
+    setToasts((prev) => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
+  }, []);
 
   /* ── Load initial data ───────────────────────────────────────────── */
   useEffect(() => {
@@ -53,29 +70,41 @@ export default function App() {
   }, []);
 
   const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
     try {
       const h = await api.fetchHistory();
       setHistory(h);
-    } catch { /* */ }
-  }, []);
+    } catch {
+      notify("Failed to load history");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [notify]);
 
   /* ── Select scenario ─────────────────────────────────────────────── */
   const selectScenario = useCallback(async (file: string) => {
+    if (dirty) {
+      if (!window.confirm("You have unsaved changes. Discard and switch?")) return;
+    }
     try {
       const [parsed, raw] = await Promise.all([
         api.fetchScenario(file),
         api.fetchScenarioRaw(file),
       ]);
+      if (!isScenario(parsed.scenario)) {
+        notify("Invalid scenario format received from server");
+        return;
+      }
       setSelectedFile(file);
-      setScenario(parsed.scenario as Scenario);
+      setScenario(parsed.scenario);
       setYamlContent(raw.content);
       setDirty(false);
       setShowRunPanel(false);
       setRunResult(null);
     } catch (e) {
-      console.error("Failed to load scenario:", e);
+      notify(`Failed to load scenario: ${e instanceof Error ? e.message : "Unknown error"}`);
     }
-  }, []);
+  }, [dirty, notify]);
 
   /* ── Save ────────────────────────────────────────────────────────── */
   const saveScenario = useCallback(async () => {
@@ -83,9 +112,10 @@ export default function App() {
     try {
       if (editorMode === "yaml") {
         await api.saveScenarioRaw(selectedFile, yamlContent);
-        // Re-parse
         const parsed = await api.fetchScenario(selectedFile);
-        setScenario(parsed.scenario as Scenario);
+        if (isScenario(parsed.scenario)) {
+          setScenario(parsed.scenario);
+        }
       } else if (scenario) {
         await api.updateScenario(selectedFile, scenario);
         const raw = await api.fetchScenarioRaw(selectedFile);
@@ -93,10 +123,11 @@ export default function App() {
       }
       setDirty(false);
       loadScenarios();
+      notify("Scenario saved", "success");
     } catch (e) {
-      console.error("Failed to save:", e);
+      notify(`Failed to save: ${e instanceof Error ? e.message : "Unknown error"}`);
     }
-  }, [selectedFile, editorMode, yamlContent, scenario, loadScenarios]);
+  }, [selectedFile, editorMode, yamlContent, scenario, loadScenarios, notify]);
 
   /* ── Run ─────────────────────────────────────────────────────────── */
   const handleRun = useCallback(async () => {
@@ -113,7 +144,7 @@ export default function App() {
       );
       setRunResult(result);
     } catch (e) {
-      console.error("Run failed:", e);
+      notify(`Run failed: ${e instanceof Error ? e.message : "Unknown error"}`);
     } finally {
       setIsRunning(false);
     }
@@ -130,9 +161,9 @@ export default function App() {
       await loadScenarios();
       selectScenario(res.file);
     } catch (e) {
-      console.error("Failed to create:", e);
+      notify(`Failed to create: ${e instanceof Error ? e.message : "Unknown error"}`);
     }
-  }, [loadScenarios, selectScenario]);
+  }, [loadScenarios, selectScenario, notify]);
 
   /* ── Delete scenario ─────────────────────────────────────────────── */
   const handleDelete = useCallback(async (file: string) => {
@@ -145,9 +176,9 @@ export default function App() {
       }
       loadScenarios();
     } catch (e) {
-      console.error("Failed to delete:", e);
+      notify(`Failed to delete: ${e instanceof Error ? e.message : "Unknown error"}`);
     }
-  }, [selectedFile, loadScenarios]);
+  }, [selectedFile, loadScenarios, notify]);
 
   /* ── Duplicate ───────────────────────────────────────────────────── */
   const handleDuplicate = useCallback(async (file: string) => {
@@ -156,25 +187,30 @@ export default function App() {
       await loadScenarios();
       selectScenario(res.file);
     } catch (e) {
-      console.error("Failed to duplicate:", e);
+      notify(`Failed to duplicate: ${e instanceof Error ? e.message : "Unknown error"}`);
     }
-  }, [loadScenarios, selectScenario]);
+  }, [loadScenarios, selectScenario, notify]);
 
-  /* ── Keyboard shortcuts ──────────────────────────────────────────── */
+  /* ── Keyboard shortcuts (use refs to avoid listener churn) ────────── */
+  const saveRef = useRef(saveScenario);
+  const runRef = useRef(handleRun);
+  saveRef.current = saveScenario;
+  runRef.current = handleRun;
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
-        saveScenario();
+        saveRef.current();
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
-        handleRun();
+        runRef.current();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [saveScenario, handleRun]);
+  }, []);
 
   /* ── Toggle right panel ──────────────────────────────────────────── */
   const togglePanel = useCallback(
@@ -256,6 +292,7 @@ export default function App() {
         {rightPanel === "history" && (
           <HistoryPanel
             history={history}
+            loading={historyLoading}
             onClose={() => setRightPanel("none")}
             onSelect={(entry) => {
               setRunResult(entry);
@@ -281,6 +318,22 @@ export default function App() {
             onRefresh={loadEnvironments}
           />
         )}
+      </div>
+
+      {/* Toast notifications */}
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className={`px-4 py-2.5 rounded-lg text-xs font-medium shadow-lg animate-fade-in ${
+              t.type === "error"
+                ? "bg-error/90 text-white"
+                : "bg-success/90 text-white"
+            }`}
+          >
+            {t.message}
+          </div>
+        ))}
       </div>
     </div>
   );
