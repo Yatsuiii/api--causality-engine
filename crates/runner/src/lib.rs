@@ -429,17 +429,17 @@ async fn run_once(
                         let all_passed = assertion_results.iter().all(|a| a.passed);
 
                         // Extract context values
-                        if let Some(extract) = &step.extract {
-                            if let Err(e) = extract_context(
+                        if let Some(extract) = &step.extract
+                            && let Err(e) = extract_context(
                                 extract,
                                 &response.body,
                                 &mut context,
                                 task_id,
                                 &step.name,
-                            ) {
-                                log.total_duration_ms = run_start.elapsed().as_millis() as u64;
-                                return (log, Err(e));
-                            }
+                            )
+                        {
+                            log.total_duration_ms = run_start.elapsed().as_millis() as u64;
+                            return (log, Err(e));
                         }
 
                         let step_log = StepLog {
