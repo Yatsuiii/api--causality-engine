@@ -36,7 +36,11 @@ def run_scenario(
     """Execute a scenario via the ace CLI and return results."""
     ace = find_ace_binary()
     run_id = str(uuid.uuid4())[:8]
-    output_file = tempfile.mktemp(suffix=".json", prefix=f"ace_run_{run_id}_")
+    output_fd = tempfile.NamedTemporaryFile(
+        suffix=".json", prefix=f"ace_run_{run_id}_", delete=False,
+    )
+    output_file = output_fd.name
+    output_fd.close()
 
     cmd = [ace, "run", scenario_path, "-o", output_file, "-v"]
 
@@ -82,10 +86,20 @@ def run_scenario(
         try:
             raw = json.loads(output_path.read_text(encoding="utf-8"))
             log = ExecutionLog(**raw)
-        except (json.JSONDecodeError, Exception):
-            pass
+        except json.JSONDecodeError as e:
+            log_parse_error = f"Failed to parse output JSON: {e}"
+        except Exception as e:
+            log_parse_error = f"Failed to load execution log: {e}"
+        else:
+            log_parse_error = None
         finally:
             output_path.unlink(missing_ok=True)
+
+        if log_parse_error:
+            return _make_error_entry(
+                run_id, scenario_path, environment, started_at,
+                log_parse_error,
+            )
 
     # If no log was produced, create one from stdout/stderr
     if not log.steps and result.returncode != 0:

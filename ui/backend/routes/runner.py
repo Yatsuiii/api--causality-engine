@@ -73,16 +73,19 @@ def validate(req: ValidateRequest):
 
 
 def _resolve_scenario(name: str) -> str:
-    """Resolve scenario name to full path in scenarios dir."""
-    d = scenarios_dir()
-    # If it's already an absolute path, use it
-    p = Path(name)
-    if p.is_absolute() and p.exists():
-        return str(p)
+    """Resolve scenario name to full path within the scenarios dir.
+
+    Rejects absolute paths and traversal sequences to prevent
+    arbitrary file access outside the scenarios directory.
+    """
+    d = scenarios_dir().resolve()
+
     # Try relative to scenarios dir
     for ext in ("", ".yaml", ".yml"):
-        candidate = d / f"{name}{ext}"
-        if candidate.exists():
+        candidate = (d / f"{name}{ext}").resolve()
+        if candidate.is_relative_to(d) and candidate.exists():
             return str(candidate)
-    # Return as-is (will fail later with a 404)
-    return str(d / name)
+
+    # Return a safe default (will fail later with a 404)
+    safe_name = Path(name).name  # strip any directory components
+    return str(d / safe_name)
