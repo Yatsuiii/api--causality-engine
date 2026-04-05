@@ -1,8 +1,9 @@
 """ACE Desktop – FastAPI sidecar backend."""
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from routes.scenarios import router as scenarios_router
 from routes.runner import router as runner_router
@@ -13,7 +14,7 @@ app = FastAPI(title="ACE Desktop Backend", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:1420", "http://localhost:5173", "http://127.0.0.1:1420", "http://127.0.0.1:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -35,11 +36,18 @@ def get_workspace():
     return {"workspace": str(get_workspace_dir())}
 
 
+class WorkspaceBody(BaseModel):
+    path: str
+
+
 @app.post("/api/workspace")
-def set_workspace(body: dict):
+def set_workspace(body: WorkspaceBody):
     from services.storage import set_workspace_dir
-    set_workspace_dir(body["path"])
-    return {"workspace": body["path"]}
+    try:
+        set_workspace_dir(body.path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"workspace": body.path}
 
 
 if __name__ == "__main__":

@@ -1,19 +1,26 @@
 """File-based storage for workspace, environments, and history."""
 
+import threading
 from pathlib import Path
 import json
 from models import Environment, HistoryEntry
 
+_workspace_lock = threading.Lock()
 _workspace_dir: Path = Path.cwd().parent.parent  # default: project root
 
 
 def get_workspace_dir() -> Path:
-    return _workspace_dir
+    with _workspace_lock:
+        return _workspace_dir
 
 
 def set_workspace_dir(path: str) -> None:
     global _workspace_dir
-    _workspace_dir = Path(path)
+    p = Path(path).resolve()
+    if not p.is_dir():
+        raise ValueError(f"Workspace path does not exist or is not a directory: {p}")
+    with _workspace_lock:
+        _workspace_dir = p
 
 
 def scenarios_dir() -> Path:
