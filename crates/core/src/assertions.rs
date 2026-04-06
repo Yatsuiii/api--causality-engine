@@ -142,7 +142,7 @@ fn eval_value_check(
 ) -> bool {
     // exists check
     if let Some(should_exist) = check.exists {
-        let does_exist = value.is_some() && !value.unwrap().is_null();
+        let does_exist = value.is_some_and(|v| !v.is_null());
         if does_exist != should_exist {
             return false;
         }
@@ -306,7 +306,7 @@ mod tests {
             "id".into(),
             ValueCheck {
                 exists: Some(true),
-                ..default_vc()
+                ..Default::default()
             },
         );
         let assertions = vec![Assertion {
@@ -327,7 +327,7 @@ mod tests {
             "data.user.name".into(),
             ValueCheck {
                 eq: Some(serde_json::json!("Alice")),
-                ..default_vc()
+                ..Default::default()
             },
         );
         let assertions = vec![Assertion {
@@ -348,7 +348,7 @@ mod tests {
             "content-type".into(),
             ValueCheck {
                 contains: Some("json".into()),
-                ..default_vc()
+                ..Default::default()
             },
         );
         let assertions = vec![Assertion {
@@ -370,7 +370,7 @@ mod tests {
             header: None,
             response_time_ms: Some(ValueCheck {
                 lt: Some(2000.0),
-                ..default_vc()
+                ..Default::default()
             }),
         }];
         let results = evaluate(&assertions, &response);
@@ -386,22 +386,11 @@ mod tests {
             header: None,
             response_time_ms: Some(ValueCheck {
                 lt: Some(2000.0),
-                ..default_vc()
+                ..Default::default()
             }),
         }];
         let results = evaluate(&assertions, &response);
         assert!(!results[0].passed);
     }
 
-    fn default_vc() -> ValueCheck {
-        ValueCheck {
-            eq: None,
-            ne: None,
-            contains: None,
-            exists: None,
-            lt: None,
-            gt: None,
-            in_list: None,
-        }
-    }
 }

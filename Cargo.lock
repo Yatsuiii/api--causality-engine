@@ -25,11 +25,13 @@ name = "ace-core"
 version = "0.1.0"
 dependencies = [
  "ace-http",
+ "base64",
  "chrono",
  "model",
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
 ]
 
@@ -1161,6 +1163,8 @@ version = "0.1.0"
 dependencies = [
  "ace-core",
  "ace-http",
+ "base64",
+ "form_urlencoded",
  "model",
  "serde",
  "serde_json",

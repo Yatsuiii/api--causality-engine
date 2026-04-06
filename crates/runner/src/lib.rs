@@ -7,6 +7,7 @@ use ace_http::{
     Client, ClientConfig, MultipartField, MultipartValue, RequestOptions, build_client,
     send_request,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use model::{Auth, Hook, Scenario};
 use std::collections::HashMap;
 use std::fmt;
@@ -64,6 +65,8 @@ impl fmt::Display for RunError {
     }
 }
 
+impl std::error::Error for RunError {}
+
 // ---------------------------------------------------------------------------
 // Execution log types
 // ---------------------------------------------------------------------------
@@ -97,7 +100,7 @@ pub struct StepLog {
 // Run configuration
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct RunConfig {
     pub cli_variables: HashMap<String, String>,
     pub verbose: bool,
@@ -120,21 +123,19 @@ async fn fetch_oauth2_token(
     let grant_type = oauth
         .grant_type
         .as_deref()
-        .unwrap_or("client_credentials")
-        .to_string();
+        .unwrap_or("client_credentials");
 
     // Build form-encoded body
-    let body = format!(
-        "grant_type={}&client_id={}&client_secret={}{}",
-        url_encode(&grant_type),
-        url_encode(&client_id),
-        url_encode(&client_secret),
-        oauth
-            .scope
-            .as_ref()
-            .map(|s| format!("&scope={}", url_encode(&resolve_template(s, context))))
-            .unwrap_or_default()
-    );
+    let body = {
+        let mut params = form_urlencoded::Serializer::new(String::new());
+        params.append_pair("grant_type", grant_type);
+        params.append_pair("client_id", &client_id);
+        params.append_pair("client_secret", &client_secret);
+        if let Some(scope) = &oauth.scope {
+            params.append_pair("scope", &resolve_template(scope, context));
+        }
+        params.finish()
+    };
 
     let mut headers = HashMap::new();
     headers.insert(
@@ -169,21 +170,6 @@ async fn fetch_oauth2_token(
         .ok_or_else(|| "OAuth2 response missing 'access_token' field".to_string())
 }
 
-fn url_encode(s: &str) -> String {
-    let mut encoded = String::new();
-    for byte in s.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => {
-                encoded.push_str(&format!("%{:02X}", byte));
-            }
-        }
-    }
-    encoded
-}
-
 // ---------------------------------------------------------------------------
 // Hook executor
 // ---------------------------------------------------------------------------
@@ -196,11 +182,10 @@ async fn execute_hooks(
     phase: &str,
 ) -> Option<String> {
     for hook in hooks {
-        // skip_if: evaluate simple condition "{{var}} == value" or just check if var is truthy
+        // skip_if: evaluate simple condition — skip when resolved value is truthy
         if let Some(condition) = &hook.skip_if {
             let resolved = resolve_template(condition, context);
-            let should_skip = resolved == "true" || resolved == "1" || !resolved.is_empty();
-            if should_skip {
+            if resolved == "true" || resolved == "1" {
                 return Some(format!("skip_if: {}", condition));
             }
         }
@@ -544,10 +529,7 @@ fn apply_auth(
     if let Some(basic) = &auth.basic {
         let user = resolve_template(&basic.username, context);
         let pass = resolve_template(&basic.password, context);
-        use std::io::Write;
-        let mut buf = Vec::new();
-        write!(buf, "{}:{}", user, pass).unwrap();
-        let encoded = base64_encode(&buf);
+        let encoded = BASE64.encode(format!("{}:{}", user, pass));
         headers.insert("Authorization".into(), format!("Basic {}", encoded));
     }
     if let Some(api_key) = &auth.api_key {
@@ -561,30 +543,6 @@ fn apply_auth(
     {
         headers.insert("Authorization".into(), format!("Bearer {}", token));
     }
-}
-
-fn base64_encode(input: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::new();
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(CHARS[(triple & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
 }
 
 fn extract_context(
@@ -635,17 +593,8 @@ pub async fn run(
     let mut handles = Vec::new();
     for i in 1..=concurrency {
         let scenario = scenario.clone();
-        let cli_variables = config.cli_variables.clone();
-        let verbose = config.verbose;
-        let insecure = config.insecure;
-        let proxy = config.proxy.clone();
+        let cfg = config.clone();
         handles.push(tokio::spawn(async move {
-            let cfg = RunConfig {
-                cli_variables,
-                verbose,
-                insecure,
-                proxy,
-            };
             run_once(&scenario, i, &cfg).await
         }));
     }
@@ -790,7 +739,7 @@ steps:
 
     #[test]
     fn base64_encode_works() {
-        assert_eq!(base64_encode(b"admin:secret"), "YWRtaW46c2VjcmV0");
-        assert_eq!(base64_encode(b"a:b"), "YTpi");
+        assert_eq!(BASE64.encode(b"admin:secret"), "YWRtaW46c2VjcmV0");
+        assert_eq!(BASE64.encode(b"a:b"), "YTpi");
     }
 }
