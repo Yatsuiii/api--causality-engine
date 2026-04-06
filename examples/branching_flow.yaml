@@ -1,0 +1,48 @@
+name: branching API flow
+initial_state: login
+
+variables:
+  base_url: https://jsonplaceholder.typicode.com
+
+steps:
+  - name: login
+    state: login
+    method: POST
+    url: "{{base_url}}/posts"
+    body:
+      title: "login attempt"
+      userId: 1
+    assert:
+      - status: 201
+    extract:
+      post_id: "id"
+    transitions:
+      - to: fetch_profile
+        when:
+          assertions: passed
+      - to: login_failed
+        default: true
+
+  - name: fetch_profile
+    state: fetch_profile
+    method: GET
+    url: "{{base_url}}/users/1"
+    assert:
+      - status: 200
+      - body:
+          username:
+            exists: true
+    transitions:
+      - to: done
+        when:
+          status: 200
+      - to: login_failed
+        default: true
+
+  - name: login_failed
+    state: login_failed
+    method: GET
+    url: "{{base_url}}/posts/1"
+    transitions:
+      - to: error
+        default: true

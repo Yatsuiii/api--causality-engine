@@ -44,8 +44,11 @@ pub fn cmd_docs(path: &str, output: Option<String>) -> Result<(), CliError> {
         ));
         doc.push_str(&format!("**{}**\n\n", step.name));
         doc.push_str(&format!(
-            "State transition: `{}` → `{}`\n\n",
-            step.transition.from, step.transition.to
+            "State: `{}` → `{}`\n\n",
+            step.state_name(),
+            step.resolved_edges()
+                .map(|(_, edges)| edges.iter().map(|e| e.to.as_str()).collect::<Vec<_>>().join(" | "))
+                .unwrap_or_default()
         ));
 
         if let Some(headers) = &step.headers {
