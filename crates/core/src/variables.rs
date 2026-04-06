@@ -40,7 +40,8 @@ fn resolve_key(key: &str, context: &HashMap<String, String>) -> String {
         return chrono::Utc::now().timestamp().to_string();
     }
     if key == "$randomInt" {
-        return rand::random::<u32>().to_string();
+        use rand::Rng;
+        return rand::thread_rng().gen_range(0..=99999).to_string();
     }
 
     // Environment variable: $env.KEY
