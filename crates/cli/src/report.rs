@@ -1,3 +1,4 @@
+use crate::error::{load_execution_log, CliError};
 use colored::Colorize;
 use runner::{ExecutionLog, RunError, StepLog};
 use std::io::Write;
@@ -254,4 +255,51 @@ fn xml_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+// ---------------------------------------------------------------------------
+// `report` subcommand
+// ---------------------------------------------------------------------------
+
+pub fn cmd_report(log_path: &str, format: &str, output: Option<String>) -> Result<(), CliError> {
+    let logs = load_execution_log(log_path)?;
+
+    let results: Vec<(ExecutionLog, Result<String, RunError>)> = logs
+        .into_iter()
+        .map(|log| {
+            let final_state = log
+                .steps
+                .last()
+                .map(|s| s.state_after.clone())
+                .unwrap_or_else(|| "unknown".into());
+            (log, Ok(final_state))
+        })
+        .collect();
+
+    match format {
+        "json" => {
+            let out_path = output.unwrap_or_else(|| "report.json".into());
+            write_json_report(&results, &out_path).map_err(|e| CliError::Io {
+                path: out_path.clone(),
+                source: e,
+            })?;
+            println!("{} {}", "Report written:".green().bold(), out_path);
+        }
+        "junit" => {
+            let out_path = output.unwrap_or_else(|| "report.xml".into());
+            write_junit_report(&results, "scenario", &out_path).map_err(|e| CliError::Io {
+                path: out_path.clone(),
+                source: e,
+            })?;
+            println!("{} {}", "Report written:".green().bold(), out_path);
+        }
+        other => {
+            return Err(CliError::BadArgument(format!(
+                "Unknown format '{}'. Use 'json' or 'junit'.",
+                other
+            )));
+        }
+    }
+
+    Ok(())
 }

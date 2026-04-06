@@ -5,7 +5,8 @@ use std::collections::HashMap;
 // Scenario — top-level YAML document
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Scenario {
     pub name: String,
     pub initial_state: String,
@@ -28,7 +29,8 @@ pub struct Scenario {
 // Auth — scenario-level authentication
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Auth {
     #[serde(default)]
     pub bearer: Option<String>,
@@ -40,19 +42,22 @@ pub struct Auth {
     pub oauth2: Option<OAuth2Config>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BasicAuth {
     pub username: String,
     pub password: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApiKeyAuth {
     pub header: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OAuth2Config {
     pub token_url: String,
     pub client_id: String,
@@ -67,7 +72,8 @@ pub struct OAuth2Config {
 // Step — a single API call in the workflow
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Step {
     pub name: String,
     pub method: Method,
@@ -97,7 +103,8 @@ pub struct Step {
 // Multipart field definition
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MultipartFieldDef {
     pub name: String,
     #[serde(default)]
@@ -114,7 +121,8 @@ pub struct MultipartFieldDef {
 // Pre/post request hooks
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Hook {
     #[serde(default)]
     pub set: Option<HashMap<String, String>>,
@@ -166,17 +174,32 @@ impl std::fmt::Display for Method {
 // Retry configuration
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetryConfig {
+    #[serde(default = "RetryConfig::default_attempts")]
     pub attempts: u32,
+    #[serde(default = "RetryConfig::default_delay_ms")]
     pub delay_ms: u64,
+}
+
+impl RetryConfig {
+    fn default_attempts() -> u32 { 3 }
+    fn default_delay_ms() -> u64 { 1000 }
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self { attempts: 3, delay_ms: 1000 }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Transition (state machine edge)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Transition {
     pub from: String,
     pub to: String,
@@ -186,7 +209,8 @@ pub struct Transition {
 // Assertions — flexible response validation
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Assertion {
     #[serde(default)]
     pub status: Option<StatusCheck>,
@@ -198,14 +222,15 @@ pub struct Assertion {
     pub response_time_ms: Option<ValueCheck>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum StatusCheck {
     Exact(u16),
     Complex(ValueCheck),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ValueCheck {
     #[serde(default)]
     pub eq: Option<serde_json::Value>,
