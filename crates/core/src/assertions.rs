@@ -135,7 +135,7 @@ fn eval_response_time(check: &ValueCheck, duration_ms: u64) -> AssertionResult {
 // Generic ValueCheck evaluator
 // ---------------------------------------------------------------------------
 
-fn eval_value_check(
+pub fn eval_value_check(
     check: &ValueCheck,
     value: Option<&serde_json::Value>,
     actual_str: &str,
