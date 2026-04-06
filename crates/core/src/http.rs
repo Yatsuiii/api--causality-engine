@@ -369,10 +369,12 @@ mod tests {
             name: "test".into(),
             method: model::Method::Get,
             url: "http://example.com".into(),
-            transition: model::Transition {
+            transition: Some(model::Transition {
                 from: "a".into(),
                 to: "b".into(),
-            },
+            }),
+            transitions: None,
+            state: None,
             headers: None,
             body: None,
             multipart: None,
@@ -407,10 +409,12 @@ mod tests {
             name: "test".into(),
             method: model::Method::Get,
             url: "http://example.com".into(),
-            transition: model::Transition {
+            transition: Some(model::Transition {
                 from: "a".into(),
                 to: "b".into(),
-            },
+            }),
+            transitions: None,
+            state: None,
             headers: None,
             body: None,
             multipart: None,

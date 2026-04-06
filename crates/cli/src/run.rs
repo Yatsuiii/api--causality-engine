@@ -71,8 +71,11 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
                     step.method.to_string().yellow(),
                     step.url.dimmed(),
                     step.name,
-                    step.transition.from.cyan(),
-                    step.transition.to.cyan(),
+                    step.state_name().cyan(),
+                    step.resolved_edges()
+                        .map(|(_, edges)| edges.iter().map(|e| e.to.as_str()).collect::<Vec<_>>().join("|"))
+                        .unwrap_or_default()
+                        .cyan(),
                 );
             }
         }

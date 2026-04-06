@@ -6,7 +6,6 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Scenario {
     pub name: String,
     pub initial_state: String,
@@ -23,6 +22,12 @@ pub struct Scenario {
     pub insecure: Option<bool>,
     #[serde(default)]
     pub default_timeout_ms: Option<u64>,
+    /// Maximum step executions before aborting (loop protection). Default: 100.
+    #[serde(default)]
+    pub max_iterations: Option<u64>,
+    /// Explicitly declared terminal states. If omitted, inferred from the graph.
+    #[serde(default)]
+    pub terminal_states: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -73,12 +78,19 @@ pub struct OAuth2Config {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Step {
     pub name: String,
     pub method: Method,
     pub url: String,
-    pub transition: Transition,
+    /// Linear mode (backward compat): single from/to transition.
+    #[serde(default)]
+    pub transition: Option<Transition>,
+    /// Graph mode: multiple conditional transition edges.
+    #[serde(default)]
+    pub transitions: Option<Vec<TransitionEdge>>,
+    /// Explicit state name for graph mode. Defaults to step `name`.
+    #[serde(default)]
+    pub state: Option<String>,
     #[serde(default)]
     pub headers: Option<HashMap<String, String>>,
     #[serde(default)]
@@ -97,6 +109,42 @@ pub struct Step {
     pub pre_request: Option<Vec<Hook>>,
     #[serde(default)]
     pub post_request: Option<Vec<Hook>>,
+}
+
+impl Step {
+    /// The state this step handles. In graph mode defaults to `name`.
+    /// In linear mode returns `transition.from`.
+    pub fn state_name(&self) -> &str {
+        if let Some(s) = &self.state {
+            return s;
+        }
+        if let Some(t) = &self.transition {
+            return &t.from;
+        }
+        &self.name
+    }
+
+    /// Normalize into a consistent edge list. Call after deserialization.
+    pub fn resolved_edges(&self) -> Result<(String, Vec<TransitionEdge>), String> {
+        match (&self.transition, &self.transitions) {
+            (Some(t), None) => {
+                Ok((t.from.clone(), vec![TransitionEdge {
+                    to: t.to.clone(),
+                    when: None,
+                    default: Some(true),
+                }]))
+            }
+            (None, Some(edges)) => {
+                Ok((self.state_name().to_string(), edges.clone()))
+            }
+            (Some(_), Some(_)) => {
+                Err(format!("Step '{}': cannot have both 'transition' and 'transitions'", self.name))
+            }
+            (None, None) => {
+                Err(format!("Step '{}': must have either 'transition' or 'transitions'", self.name))
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +243,7 @@ impl Default for RetryConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Transition (state machine edge)
+// Transition (state machine edge) — linear mode (backward compat)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,6 +251,44 @@ impl Default for RetryConfig {
 pub struct Transition {
     pub from: String,
     pub to: String,
+}
+
+// ---------------------------------------------------------------------------
+// Graph-mode transitions — conditional edges
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransitionEdge {
+    pub to: String,
+    #[serde(default)]
+    pub when: Option<TransitionCondition>,
+    #[serde(default)]
+    pub default: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransitionCondition {
+    #[serde(default)]
+    pub status: Option<StatusMatch>,
+    #[serde(default)]
+    pub body: Option<HashMap<String, ValueCheck>>,
+    #[serde(default)]
+    pub assertions: Option<AssertionMatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StatusMatch {
+    Exact(u16),
+    Complex(ValueCheck),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssertionMatch {
+    Passed,
+    Failed,
 }
 
 // ---------------------------------------------------------------------------
@@ -488,5 +574,240 @@ steps:
         assert!(pre[0].set.is_some());
         assert_eq!(pre[1].delay_ms, Some(100));
         assert_eq!(pre[2].log.as_deref(), Some("Starting request"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Graph-mode transition tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_graph_transitions() {
+        let yaml = r#"
+name: branching
+initial_state: login
+steps:
+  - name: login
+    state: login
+    method: POST
+    url: http://example.com/auth
+    transitions:
+      - to: dashboard
+        when:
+          status: 200
+      - to: retry
+        when:
+          status: 429
+      - to: failed
+        default: true
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let step = &scenario.steps[0];
+        assert!(step.transition.is_none());
+        let edges = step.transitions.as_ref().unwrap();
+        assert_eq!(edges.len(), 3);
+        assert_eq!(edges[0].to, "dashboard");
+        assert!(edges[0].when.is_some());
+        assert_eq!(edges[2].default, Some(true));
+    }
+
+    #[test]
+    fn resolved_edges_linear() {
+        let yaml = r#"
+name: test
+initial_state: start
+steps:
+  - name: step1
+    method: GET
+    url: http://example.com
+    transition:
+      from: start
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let (from, edges) = scenario.steps[0].resolved_edges().unwrap();
+        assert_eq!(from, "start");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].to, "done");
+        assert_eq!(edges[0].default, Some(true));
+    }
+
+    #[test]
+    fn resolved_edges_graph() {
+        let yaml = r#"
+name: test
+initial_state: check
+steps:
+  - name: check
+    method: GET
+    url: http://example.com
+    transitions:
+      - to: pass
+        when:
+          status: 200
+      - to: fail
+        default: true
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let (from, edges) = scenario.steps[0].resolved_edges().unwrap();
+        assert_eq!(from, "check");
+        assert_eq!(edges.len(), 2);
+    }
+
+    #[test]
+    fn resolved_edges_rejects_both() {
+        let step = Step {
+            name: "bad".into(),
+            method: Method::Get,
+            url: "http://example.com".into(),
+            transition: Some(Transition { from: "a".into(), to: "b".into() }),
+            transitions: Some(vec![TransitionEdge { to: "c".into(), when: None, default: Some(true) }]),
+            state: None,
+            headers: None,
+            body: None,
+            multipart: None,
+            extract: None,
+            retry: None,
+            assertions: None,
+            timeout_ms: None,
+            pre_request: None,
+            post_request: None,
+        };
+        assert!(step.resolved_edges().is_err());
+    }
+
+    #[test]
+    fn resolved_edges_rejects_neither() {
+        let step = Step {
+            name: "bad".into(),
+            method: Method::Get,
+            url: "http://example.com".into(),
+            transition: None,
+            transitions: None,
+            state: None,
+            headers: None,
+            body: None,
+            multipart: None,
+            extract: None,
+            retry: None,
+            assertions: None,
+            timeout_ms: None,
+            pre_request: None,
+            post_request: None,
+        };
+        assert!(step.resolved_edges().is_err());
+    }
+
+    #[test]
+    fn state_name_defaults() {
+        let step = Step {
+            name: "my_step".into(),
+            method: Method::Get,
+            url: "http://example.com".into(),
+            transition: None,
+            transitions: Some(vec![]),
+            state: None,
+            headers: None,
+            body: None,
+            multipart: None,
+            extract: None,
+            retry: None,
+            assertions: None,
+            timeout_ms: None,
+            pre_request: None,
+            post_request: None,
+        };
+        assert_eq!(step.state_name(), "my_step");
+    }
+
+    #[test]
+    fn state_name_explicit() {
+        let step = Step {
+            name: "my_step".into(),
+            method: Method::Get,
+            url: "http://example.com".into(),
+            transition: None,
+            transitions: Some(vec![]),
+            state: Some("custom_state".into()),
+            headers: None,
+            body: None,
+            multipart: None,
+            extract: None,
+            retry: None,
+            assertions: None,
+            timeout_ms: None,
+            pre_request: None,
+            post_request: None,
+        };
+        assert_eq!(step.state_name(), "custom_state");
+    }
+
+    #[test]
+    fn parse_max_iterations() {
+        let yaml = r#"
+name: loop test
+initial_state: start
+max_iterations: 50
+steps:
+  - name: poll
+    method: GET
+    url: http://example.com
+    transition:
+      from: start
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        assert_eq!(scenario.max_iterations, Some(50));
+    }
+
+    #[test]
+    fn parse_transition_condition_body() {
+        let yaml = r#"
+name: test
+initial_state: check
+steps:
+  - name: check
+    method: GET
+    url: http://example.com
+    transitions:
+      - to: ready
+        when:
+          body:
+            status:
+              eq: "complete"
+      - to: wait
+        default: true
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let edges = scenario.steps[0].transitions.as_ref().unwrap();
+        let condition = edges[0].when.as_ref().unwrap();
+        let body_check = condition.body.as_ref().unwrap();
+        assert!(body_check.contains_key("status"));
+    }
+
+    #[test]
+    fn parse_assertion_match_condition() {
+        let yaml = r#"
+name: test
+initial_state: verify
+steps:
+  - name: verify
+    method: GET
+    url: http://example.com
+    assert:
+      - status: 200
+    transitions:
+      - to: success
+        when:
+          assertions: passed
+      - to: handle_error
+        when:
+          assertions: failed
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let edges = scenario.steps[0].transitions.as_ref().unwrap();
+        let cond0 = edges[0].when.as_ref().unwrap();
+        assert_eq!(cond0.assertions, Some(AssertionMatch::Passed));
+        let cond1 = edges[1].when.as_ref().unwrap();
+        assert_eq!(cond1.assertions, Some(AssertionMatch::Failed));
     }
 }
