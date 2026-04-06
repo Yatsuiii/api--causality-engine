@@ -1,28 +1,12 @@
+use crate::error::{read_file, write_file, CliError};
 use colored::Colorize;
 use serde_json::Value;
-use std::fs;
-use std::process;
 
 /// Import a Postman Collection v2.1 JSON and convert to ACE YAML scenarios.
-pub fn cmd_import(collection_path: &str, output_dir: &str) {
-    let json_str = fs::read_to_string(collection_path).unwrap_or_else(|e| {
-        eprintln!(
-            "{} Failed to read '{}': {}",
-            "error:".red().bold(),
-            collection_path,
-            e
-        );
-        process::exit(2);
-    });
+pub fn cmd_import(collection_path: &str, output_dir: &str) -> Result<(), CliError> {
+    let json_str = read_file(collection_path)?;
 
-    let collection: Value = serde_json::from_str(&json_str).unwrap_or_else(|e| {
-        eprintln!(
-            "{} Failed to parse Postman collection: {}",
-            "error:".red().bold(),
-            e
-        );
-        process::exit(2);
-    });
+    let collection: Value = serde_json::from_str(&json_str).map_err(CliError::JsonParse)?;
 
     let name = collection
         .pointer("/info/name")
@@ -40,7 +24,7 @@ pub fn cmd_import(collection_path: &str, output_dir: &str) {
             "{} No items found in collection",
             "warning:".yellow().bold()
         );
-        return;
+        return Ok(());
     }
 
     // Flatten nested folders
@@ -51,7 +35,7 @@ pub fn cmd_import(collection_path: &str, output_dir: &str) {
             "{} No requests found in collection",
             "warning:".yellow().bold()
         );
-        return;
+        return Ok(());
     }
 
     // Build YAML
@@ -132,14 +116,11 @@ pub fn cmd_import(collection_path: &str, output_dir: &str) {
     let output_path = if output_dir == "." {
         filename.clone()
     } else {
-        fs::create_dir_all(output_dir).ok();
+        std::fs::create_dir_all(output_dir).ok();
         format!("{}/{}", output_dir, filename)
     };
 
-    fs::write(&output_path, &yaml).unwrap_or_else(|e| {
-        eprintln!("{} Failed to write: {}", "error:".red().bold(), e);
-        process::exit(2);
-    });
+    write_file(&output_path, &yaml)?;
 
     println!(
         "\n{} Imported {} requests from Postman collection",
@@ -151,6 +132,8 @@ pub fn cmd_import(collection_path: &str, output_dir: &str) {
         "\n  {} Add assertions and extract fields to complete the scenario",
         "Tip:".dimmed()
     );
+
+    Ok(())
 }
 
 fn flatten_items(items: &[Value]) -> Vec<Value> {

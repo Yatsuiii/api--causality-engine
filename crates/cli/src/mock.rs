@@ -1,8 +1,6 @@
+use crate::error::{load_scenario_file, CliError};
 use colored::Colorize;
-use model::load_scenario;
 use std::collections::HashMap;
-use std::fs;
-use std::process;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
@@ -14,31 +12,16 @@ struct MockRoute {
     response_headers: HashMap<String, String>,
 }
 
-pub async fn cmd_mock(scenario_path: &str, port: u16) {
-    let yaml = fs::read_to_string(scenario_path).unwrap_or_else(|e| {
-        eprintln!(
-            "{} Failed to read '{}': {}",
-            "error:".red().bold(),
-            scenario_path,
-            e
-        );
-        process::exit(2);
-    });
-
-    let scenario = load_scenario(&yaml).unwrap_or_else(|e| {
-        eprintln!("{} Failed to parse scenario: {}", "error:".red().bold(), e);
-        process::exit(2);
-    });
+pub async fn cmd_mock(scenario_path: &str, port: u16) -> Result<(), CliError> {
+    let scenario = load_scenario_file(scenario_path)?;
 
     // Build routes from scenario steps
     let mut routes = Vec::new();
     for step in &scenario.steps {
         let url = &step.url;
-        // Extract path from URL
         let path = extract_path(url);
         let method = step.method.as_str().to_string();
 
-        // Determine mock status from assertions
         let status = step
             .assertions
             .as_ref()
@@ -50,7 +33,6 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) {
             })
             .unwrap_or(200);
 
-        // Build a mock response body from extract fields
         let mut mock_body = serde_json::Map::new();
         if let Some(extract) = &step.extract {
             for json_key in extract.values() {
@@ -60,7 +42,6 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) {
                 );
             }
         }
-        // If body was sent, echo some of it back
         if let Some(body) = &step.body
             && let Ok(json_str) = serde_json::to_string(body)
             && let Ok(serde_json::Value::Object(obj)) = serde_json::from_str(&json_str)
@@ -110,26 +91,20 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) {
     // Start TCP server
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
         .await
-        .unwrap_or_else(|e| {
-            eprintln!(
-                "{} Failed to bind port {}: {}",
-                "error:".red().bold(),
-                port,
-                e
-            );
-            process::exit(2);
-        });
+        .map_err(|e| CliError::Io {
+            path: format!("0.0.0.0:{}", port),
+            source: e,
+        })?;
 
     loop {
-        let (mut stream, addr) = match listener.accept().await {
+        let (stream, addr) = match listener.accept().await {
             Ok(conn) => conn,
             Err(_) => continue,
         };
 
         let routes_ref = &routes;
 
-        // Simple HTTP/1.1 handler
-        let (reader, mut writer) = stream.split();
+        let (reader, mut writer) = stream.into_split();
         let mut buf_reader = BufReader::new(reader);
         let mut request_line = String::new();
         if buf_reader.read_line(&mut request_line).await.is_err() {
@@ -200,7 +175,6 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) {
 }
 
 fn extract_path(url: &str) -> String {
-    // Remove protocol and host to get path
     if let Some(after_scheme) = url
         .strip_prefix("http://")
         .or_else(|| url.strip_prefix("https://"))
@@ -208,11 +182,9 @@ fn extract_path(url: &str) -> String {
     {
         return after_scheme[slash_pos..].to_string();
     }
-    // If URL contains {{variables}}, treat the whole thing as a pattern
     if url.starts_with('/') {
         return url.to_string();
     }
-    // URL is probably a template like {{base_url}}/path
     if let Some(slash_pos) = url.find("}/") {
         return url[slash_pos + 1..].to_string();
     }
@@ -220,7 +192,6 @@ fn extract_path(url: &str) -> String {
 }
 
 fn path_matches(pattern: &str, actual: &str) -> bool {
-    // Simple matching: strip query strings, handle {{var}} as wildcards
     let pattern_path = pattern.split('?').next().unwrap_or(pattern);
     let actual_path = actual.split('?').next().unwrap_or(actual);
 
@@ -231,9 +202,10 @@ fn path_matches(pattern: &str, actual: &str) -> bool {
         return false;
     }
 
-    pattern_parts.iter().zip(actual_parts.iter()).all(|(p, a)| {
-        p.contains("{{") || *p == *a // Template segments match anything
-    })
+    pattern_parts
+        .iter()
+        .zip(actual_parts.iter())
+        .all(|(p, a)| p.contains("{{") || *p == *a)
 }
 
 fn status_text(code: u16) -> &'static str {
