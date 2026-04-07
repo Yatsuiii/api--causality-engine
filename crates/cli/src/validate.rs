@@ -1,4 +1,4 @@
-use crate::error::{load_scenario_file, CliError};
+use crate::error::{CliError, load_scenario_file};
 use ace_core::validate::validate_scenario;
 use colored::Colorize;
 

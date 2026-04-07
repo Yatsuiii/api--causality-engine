@@ -1,4 +1,4 @@
-use crate::error::{load_scenario_file, write_file, CliError};
+use crate::error::{CliError, load_scenario_file, write_file};
 use colored::Colorize;
 
 pub fn cmd_docs(path: &str, output: Option<String>) -> Result<(), CliError> {
@@ -47,7 +47,11 @@ pub fn cmd_docs(path: &str, output: Option<String>) -> Result<(), CliError> {
             "State: `{}` → `{}`\n\n",
             step.state_name(),
             step.resolved_edges()
-                .map(|(_, edges)| edges.iter().map(|e| e.to.as_str()).collect::<Vec<_>>().join(" | "))
+                .map(|(_, edges)| edges
+                    .iter()
+                    .map(|e| e.to.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | "))
                 .unwrap_or_default()
         ));
 

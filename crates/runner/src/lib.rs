@@ -143,10 +143,7 @@ async fn fetch_oauth2_token(
     let token_url = resolve_template(&oauth.token_url, context);
     let client_id = resolve_template(&oauth.client_id, context);
     let client_secret = resolve_template(&oauth.client_secret, context);
-    let grant_type = oauth
-        .grant_type
-        .as_deref()
-        .unwrap_or("client_credentials");
+    let grant_type = oauth.grant_type.as_deref().unwrap_or("client_credentials");
 
     let body = {
         let mut params = form_urlencoded::Serializer::new(String::new());
@@ -365,9 +362,7 @@ async fn execute_step(
 ) -> Result<StepResult, RunError> {
     // Execute pre-request hooks
     if let Some(hooks) = &step.pre_request {
-        if let Some(skip_reason) =
-            execute_hooks(hooks, context, task_id, &step.name, "pre").await
-        {
+        if let Some(skip_reason) = execute_hooks(hooks, context, task_id, &step.name, "pre").await {
             return Err(RunError::Skipped {
                 step: step.name.clone(),
                 reason: skip_reason,
@@ -582,10 +577,27 @@ async fn run_once(
     let graph_mode = ace_core::validate::is_graph_mode(scenario);
 
     if graph_mode {
-        run_graph_mode(scenario, &client, &mut context, &mut log, config, task_id, run_start).await
+        run_graph_mode(
+            scenario,
+            &client,
+            &mut context,
+            &mut log,
+            config,
+            task_id,
+            run_start,
+        )
+        .await
     } else {
-        run_linear_mode(scenario, &client, &mut context, &mut log, config, task_id, run_start)
-            .await
+        run_linear_mode(
+            scenario,
+            &client,
+            &mut context,
+            &mut log,
+            config,
+            task_id,
+            run_start,
+        )
+        .await
     }
 }
 
@@ -616,7 +628,16 @@ async fn run_linear_mode(
             );
         }
 
-        match execute_step(step, client, context, scenario.auth.as_ref(), config, task_id).await {
+        match execute_step(
+            step,
+            client,
+            context,
+            scenario.auth.as_ref(),
+            config,
+            task_id,
+        )
+        .await
+        {
             Ok(result) => {
                 let step_log = StepLog {
                     step_name: step.name.clone(),
@@ -627,7 +648,11 @@ async fn run_linear_mode(
                     status: result.response.status,
                     duration_ms: result.response.duration_ms,
                     assertions: result.assertion_results.clone(),
-                    request_body: if config.verbose { result.body_sent } else { None },
+                    request_body: if config.verbose {
+                        result.body_sent
+                    } else {
+                        None
+                    },
                     response_body: if config.verbose {
                         Some(result.response.body.clone())
                     } else {
@@ -663,11 +688,7 @@ async fn run_linear_mode(
                 current_state = transition.to.clone();
             }
             Err(RunError::Skipped { .. }) => {
-                debug!(
-                    task_id,
-                    step = step.name.as_str(),
-                    "Step skipped"
-                );
+                debug!(task_id, step = step.name.as_str(), "Step skipped");
                 current_state = transition.to.clone();
                 continue;
             }
@@ -724,7 +745,16 @@ async fn run_graph_mode(
 
         let state_before = current_state.clone();
 
-        match execute_step(step, client, context, scenario.auth.as_ref(), config, task_id).await {
+        match execute_step(
+            step,
+            client,
+            context,
+            scenario.auth.as_ref(),
+            config,
+            task_id,
+        )
+        .await
+        {
             Ok(result) => {
                 // Evaluate transitions to determine next state
                 let (_, edges) = step.resolved_edges().unwrap();
@@ -751,7 +781,11 @@ async fn run_graph_mode(
                     status: result.response.status,
                     duration_ms: result.response.duration_ms,
                     assertions: result.assertion_results.clone(),
-                    request_body: if config.verbose { result.body_sent } else { None },
+                    request_body: if config.verbose {
+                        result.body_sent
+                    } else {
+                        None
+                    },
                     response_body: if config.verbose {
                         Some(result.response.body.clone())
                     } else {
@@ -873,9 +907,9 @@ pub async fn run(
     for i in 1..=concurrency {
         let scenario = scenario.clone();
         let cfg = config.clone();
-        handles.push(tokio::spawn(async move {
-            run_once(&scenario, i, &cfg).await
-        }));
+        handles.push(tokio::spawn(
+            async move { run_once(&scenario, i, &cfg).await },
+        ));
     }
 
     let mut results = Vec::new();

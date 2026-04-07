@@ -145,7 +145,11 @@ fn build_request_options(
     });
 
     // Ensure Content-Type for JSON bodies
-    if body.is_some() && !headers.keys().any(|k| k.eq_ignore_ascii_case("content-type")) {
+    if body.is_some()
+        && !headers
+            .keys()
+            .any(|k| k.eq_ignore_ascii_case("content-type"))
+    {
         headers.insert("Content-Type".into(), "application/json".into());
     }
 
@@ -181,9 +185,7 @@ async fn run_hooks(hooks: &[Hook], context: &mut HashMap<String, String>, allow_
                 context.insert(k.clone(), resolved);
             }
         }
-        if allow_delay
-            && let Some(delay) = hook.delay_ms
-        {
+        if allow_delay && let Some(delay) = hook.delay_ms {
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }
     }
@@ -193,7 +195,11 @@ async fn run_hooks(hooks: &[Hook], context: &mut HashMap<String, String>, allow_
 // Auth helpers
 // ---------------------------------------------------------------------------
 
-fn apply_auth(auth: &Auth, headers: &mut HashMap<String, String>, context: &HashMap<String, String>) {
+fn apply_auth(
+    auth: &Auth,
+    headers: &mut HashMap<String, String>,
+    context: &HashMap<String, String>,
+) {
     if let Some(bearer) = &auth.bearer {
         let token = resolve_template(bearer, context);
         headers
@@ -279,7 +285,7 @@ fn extract_variables(step: &Step, response: &HttpResponse) -> HashMap<String, St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use model::{Auth, BasicAuth, ApiKeyAuth};
+    use model::{ApiKeyAuth, Auth, BasicAuth};
 
     #[test]
     fn apply_bearer_auth() {

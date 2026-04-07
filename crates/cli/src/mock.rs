@@ -1,4 +1,4 @@
-use crate::error::{load_scenario_file, CliError};
+use crate::error::{CliError, load_scenario_file};
 use colored::Colorize;
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
