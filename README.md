@@ -10,14 +10,11 @@ No GUI. No cloud account. No collections syncing to someone's server. Just a bin
 
 ## Why
 
-Postman is fine for poking at endpoints. It falls apart when you need to test something like:
+I kept reaching for Postman to test multi-step flows and it kept falling apart. Login, extract the token, use it in the next request, assert something about the response — that's not a collection, that's a workflow, and Postman treats it like an afterthought.
 
-1. Create a user → extract the ID
-2. Log in → extract the token  
-3. Use the token to fetch the user profile → assert the fields match
-4. Delete the user → assert 204
+So I built this. It's probably missing features you want. Open an issue.
 
-That's a stateful workflow, not a collection of independent requests. ACE models it as a state machine so transitions are explicit, pre-validated, and replayable.
+The core idea: steps are states in a graph. You define where each step goes on success, and ACE validates the whole graph before running a single request. No more "oh it failed on step 4 because step 2 silently skipped the extract".
 
 ## Install
 
