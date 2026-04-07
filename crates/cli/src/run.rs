@@ -1,4 +1,4 @@
-use crate::error::{load_scenario_file, CliError};
+use crate::error::{CliError, load_scenario_file};
 use crate::report;
 use ace_core::validate::validate_scenario;
 use colored::Colorize;
@@ -73,7 +73,11 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
                     step.name,
                     step.state_name().cyan(),
                     step.resolved_edges()
-                        .map(|(_, edges)| edges.iter().map(|e| e.to.as_str()).collect::<Vec<_>>().join("|"))
+                        .map(|(_, edges)| edges
+                            .iter()
+                            .map(|e| e.to.as_str())
+                            .collect::<Vec<_>>()
+                            .join("|"))
                         .unwrap_or_default()
                         .cyan(),
                 );

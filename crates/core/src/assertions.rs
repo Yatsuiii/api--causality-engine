@@ -392,5 +392,4 @@ mod tests {
         let results = evaluate(&assertions, &response);
         assert!(!results[0].passed);
     }
-
 }

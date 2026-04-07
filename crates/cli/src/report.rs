@@ -1,4 +1,4 @@
-use crate::error::{load_execution_log, CliError};
+use crate::error::{CliError, load_execution_log};
 use colored::Colorize;
 use runner::{ExecutionLog, RunError, StepLog};
 use std::io::Write;

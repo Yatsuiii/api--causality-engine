@@ -55,17 +55,17 @@ pub fn validate_scenario(scenario: &Scenario) -> Vec<String> {
         }
     }
 
-    if let Some(c) = scenario.concurrency {
-        if c == 0 {
-            issues.push("Concurrency must be >= 1".into());
-        }
+    if let Some(c) = scenario.concurrency
+        && c == 0
+    {
+        issues.push("Concurrency must be >= 1".into());
     }
 
     for step in &scenario.steps {
-        if let Some(retry) = &step.retry {
-            if retry.attempts == 0 {
-                issues.push(format!("Step '{}': retry attempts must be >= 1", step.name));
-            }
+        if let Some(retry) = &step.retry
+            && retry.attempts == 0
+        {
+            issues.push(format!("Step '{}': retry attempts must be >= 1", step.name));
         }
     }
 
@@ -201,8 +201,7 @@ fn validate_graph(scenario: &Scenario) -> Vec<String> {
 
     if effective_terminals.is_empty() {
         issues.push(
-            "No terminal state is reachable from initial_state — workflow may loop forever"
-                .into(),
+            "No terminal state is reachable from initial_state — workflow may loop forever".into(),
         );
     } else if state_map.contains_key(&scenario.initial_state) {
         // BFS from initial_state
@@ -215,12 +214,12 @@ fn validate_graph(scenario: &Scenario) -> Vec<String> {
                 continue;
             }
             // Find step handling this state
-            if let Some(step) = scenario.steps.iter().find(|s| s.state_name() == state) {
-                if let Some(edges) = &step.transitions {
-                    for edge in edges {
-                        if !visited.contains(&edge.to) {
-                            queue.push_back(edge.to.clone());
-                        }
+            if let Some(step) = scenario.steps.iter().find(|s| s.state_name() == state)
+                && let Some(edges) = &step.transitions
+            {
+                for edge in edges {
+                    if !visited.contains(&edge.to) {
+                        queue.push_back(edge.to.clone());
                     }
                 }
             }
