@@ -361,13 +361,13 @@ async fn execute_step(
     task_id: usize,
 ) -> Result<StepResult, RunError> {
     // Execute pre-request hooks
-    if let Some(hooks) = &step.pre_request {
-        if let Some(skip_reason) = execute_hooks(hooks, context, task_id, &step.name, "pre").await {
-            return Err(RunError::Skipped {
-                step: step.name.clone(),
-                reason: skip_reason,
-            });
-        }
+    if let Some(hooks) = &step.pre_request
+        && let Some(skip_reason) = execute_hooks(hooks, context, task_id, &step.name, "pre").await
+    {
+        return Err(RunError::Skipped {
+            step: step.name.clone(),
+            reason: skip_reason,
+        });
     }
 
     // Resolve URL
@@ -474,11 +474,7 @@ async fn execute_step(
 
                     // Extract context values
                     if let Some(extract) = &step.extract {
-                        if let Err(e) =
-                            extract_context(extract, &response.body, context, task_id, &step.name)
-                        {
-                            return Err(e);
-                        }
+                        extract_context(extract, &response.body, context, task_id, &step.name)?;
                     }
 
                     // Execute post-request hooks
