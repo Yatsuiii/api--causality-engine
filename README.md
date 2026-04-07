@@ -1,8 +1,40 @@
 # ACE — API Causality Engine
 
+[![CI](https://github.com/Yatsuiii/api--causality-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Yatsuiii/api--causality-engine/actions/workflows/ci.yml)
+[![Release](https://github.com/Yatsuiii/api--causality-engine/actions/workflows/release.yml/badge.svg)](https://github.com/Yatsuiii/api--causality-engine/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A production-grade, stateful API workflow testing engine built in Rust. Define API test scenarios in YAML with state machine transitions, run them with concurrent users, assert on responses, and get detailed reports.
 
 **Think Postman Collections meets state machines — but faster, deterministic, and CLI-native.**
+
+## Install
+
+### Pre-built binaries (recommended)
+
+Download the latest binary for your platform from the [Releases page](https://github.com/Yatsuiii/api--causality-engine/releases/latest):
+
+| Platform | File |
+|----------|------|
+| Linux x86_64 | `ace-linux-x86_64.tar.gz` |
+| Linux aarch64 | `ace-linux-aarch64.tar.gz` |
+| macOS x86_64 | `ace-macos-x86_64.tar.gz` |
+| macOS Apple Silicon | `ace-macos-aarch64.tar.gz` |
+| Windows x86_64 | `ace-windows-x86_64.zip` |
+
+```bash
+# Linux / macOS — one-liner
+curl -L https://github.com/Yatsuiii/api--causality-engine/releases/latest/download/ace-linux-x86_64.tar.gz | tar xz
+sudo mv ace /usr/local/bin/
+```
+
+### Build from source
+
+Requires [Rust](https://rustup.rs):
+
+```bash
+cargo install --git https://github.com/Yatsuiii/api--causality-engine ace
+```
 
 ## Features
 
@@ -23,29 +55,29 @@ A production-grade, stateful API workflow testing engine built in Rust. Define A
 ## Quick Start
 
 ```bash
-# Build
-cargo build --release
+# Scaffold a new scenario
+ace init
 
-# Run a scenario
-cargo run -p ace -- run examples/full_test.yaml
+# Run it
+ace run ace.yaml
 
 # Verbose output (shows request/response bodies)
-cargo run -p ace -- run examples/login_flow.yaml -v
+ace run ace.yaml -v
 
 # Validate without running
-cargo run -p ace -- validate examples/full_test.yaml
+ace validate ace.yaml
 
 # Run with env file and variable overrides
-cargo run -p ace -- run examples/full_test.yaml --env .env --var base_url=https://staging.api.com
+ace run ace.yaml --env .env --var base_url=https://staging.api.com
 
 # Generate JUnit XML report (for CI/CD)
-cargo run -p ace -- run examples/login_flow.yaml --junit report.xml
+ace run ace.yaml --junit report.xml
 
 # Replay a previous execution
-cargo run -p ace -- replay execution_log.json
+ace replay execution_log.json
 
 # Generate report from log
-cargo run -p ace -- report execution_log.json --format junit -o report.xml
+ace report execution_log.json --format junit -o report.xml
 ```
 
 ## Scenario Format
