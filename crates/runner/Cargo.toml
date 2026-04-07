@@ -2,6 +2,9 @@
 name = "runner"
 version = "0.1.0"
 edition = "2024"
+authors = ["Yatsuiii"]
+license = "MIT"
+repository = "https://github.com/Yatsuiii/api--causality-engine"
 
 [dependencies]
 model = { path = "../model" }
