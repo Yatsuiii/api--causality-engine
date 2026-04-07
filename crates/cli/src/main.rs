@@ -1,6 +1,7 @@
 mod docs;
 mod error;
 mod import;
+mod init;
 mod mock;
 mod replay;
 mod report;
@@ -116,6 +117,17 @@ enum Commands {
         port: u16,
     },
 
+    /// Scaffold a new scenario YAML file
+    Init {
+        /// Output file path
+        #[arg(default_value = "ace.yaml")]
+        output: String,
+
+        /// Write a minimal skeleton instead of a full example
+        #[arg(long)]
+        minimal: bool,
+    },
+
     /// Generate API documentation from a scenario
     Docs {
         /// Path to the scenario YAML file
@@ -174,6 +186,7 @@ async fn main() {
             format,
             output,
         } => report::cmd_report(&log_file, &format, output),
+        Commands::Init { output, minimal } => init::cmd_init(&output, minimal),
         Commands::Import { collection, output } => import::cmd_import(&collection, &output),
         Commands::Mock { scenario, port } => mock::cmd_mock(&scenario, port).await,
         Commands::Docs { scenario, output } => docs::cmd_docs(&scenario, output),
