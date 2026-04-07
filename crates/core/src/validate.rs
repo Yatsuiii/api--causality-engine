@@ -235,10 +235,10 @@ fn validate_graph(scenario: &Scenario) -> Vec<String> {
     }
 
     // Validate max_iterations
-    if let Some(max) = scenario.max_iterations {
-        if max == 0 {
-            issues.push("max_iterations must be >= 1".into());
-        }
+    if let Some(max) = scenario.max_iterations
+        && max == 0
+    {
+        issues.push("max_iterations must be >= 1".into());
     }
 
     issues
