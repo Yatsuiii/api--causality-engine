@@ -70,10 +70,7 @@ pub fn cmd_init(output: &str, minimal: bool) -> Result<(), CliError> {
     })?;
 
     println!("{} {}", "Created:".green().bold(), output);
-    println!(
-        "  Run with: {}",
-        format!("ace run {}", output).cyan()
-    );
+    println!("  Run with: {}", format!("ace run {}", output).cyan());
 
     Ok(())
 }

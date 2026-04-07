@@ -127,22 +127,23 @@ impl Step {
     /// Normalize into a consistent edge list. Call after deserialization.
     pub fn resolved_edges(&self) -> Result<(String, Vec<TransitionEdge>), String> {
         match (&self.transition, &self.transitions) {
-            (Some(t), None) => {
-                Ok((t.from.clone(), vec![TransitionEdge {
+            (Some(t), None) => Ok((
+                t.from.clone(),
+                vec![TransitionEdge {
                     to: t.to.clone(),
                     when: None,
                     default: Some(true),
-                }]))
-            }
-            (None, Some(edges)) => {
-                Ok((self.state_name().to_string(), edges.clone()))
-            }
-            (Some(_), Some(_)) => {
-                Err(format!("Step '{}': cannot have both 'transition' and 'transitions'", self.name))
-            }
-            (None, None) => {
-                Err(format!("Step '{}': must have either 'transition' or 'transitions'", self.name))
-            }
+                }],
+            )),
+            (None, Some(edges)) => Ok((self.state_name().to_string(), edges.clone())),
+            (Some(_), Some(_)) => Err(format!(
+                "Step '{}': cannot have both 'transition' and 'transitions'",
+                self.name
+            )),
+            (None, None) => Err(format!(
+                "Step '{}': must have either 'transition' or 'transitions'",
+                self.name
+            )),
         }
     }
 }
@@ -232,13 +233,20 @@ pub struct RetryConfig {
 }
 
 impl RetryConfig {
-    fn default_attempts() -> u32 { 3 }
-    fn default_delay_ms() -> u64 { 1000 }
+    fn default_attempts() -> u32 {
+        3
+    }
+    fn default_delay_ms() -> u64 {
+        1000
+    }
 }
 
 impl Default for RetryConfig {
     fn default() -> Self {
-        Self { attempts: 3, delay_ms: 1000 }
+        Self {
+            attempts: 3,
+            delay_ms: 1000,
+        }
     }
 }
 
@@ -659,8 +667,15 @@ steps:
             name: "bad".into(),
             method: Method::Get,
             url: "http://example.com".into(),
-            transition: Some(Transition { from: "a".into(), to: "b".into() }),
-            transitions: Some(vec![TransitionEdge { to: "c".into(), when: None, default: Some(true) }]),
+            transition: Some(Transition {
+                from: "a".into(),
+                to: "b".into(),
+            }),
+            transitions: Some(vec![TransitionEdge {
+                to: "c".into(),
+                when: None,
+                default: Some(true),
+            }]),
             state: None,
             headers: None,
             body: None,

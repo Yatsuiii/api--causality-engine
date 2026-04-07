@@ -1,4 +1,4 @@
-use crate::error::{read_file, write_file, CliError};
+use crate::error::{CliError, read_file, write_file};
 use colored::Colorize;
 use serde_json::Value;
 
