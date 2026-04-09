@@ -41,6 +41,10 @@ export default function App() {
   const [backendOnline, setBackendOnline] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [loadErrors, setLoadErrors] = useState<{ scenarios: boolean; environments: boolean }>({
+    scenarios: false,
+    environments: false,
+  });
 
   const notify = useCallback((message: string, type: "error" | "success" = "error") => {
     const id = ++toastId;
@@ -59,14 +63,20 @@ export default function App() {
     try {
       const list = await api.fetchScenarios();
       setScenarios(list);
-    } catch { /* backend might not be up */ }
+      setLoadErrors((prev) => ({ ...prev, scenarios: false }));
+    } catch {
+      setLoadErrors((prev) => ({ ...prev, scenarios: true }));
+    }
   }, []);
 
   const loadEnvironments = useCallback(async () => {
     try {
       const envs = await api.fetchEnvironments();
       setEnvironments(envs);
-    } catch { /* */ }
+      setLoadErrors((prev) => ({ ...prev, environments: false }));
+    } catch {
+      setLoadErrors((prev) => ({ ...prev, environments: true }));
+    }
   }, []);
 
   const loadHistory = useCallback(async () => {
@@ -107,8 +117,8 @@ export default function App() {
   }, [dirty, notify]);
 
   /* ── Save ────────────────────────────────────────────────────────── */
-  const saveScenario = useCallback(async () => {
-    if (!selectedFile) return;
+  const saveScenario = useCallback(async (): Promise<boolean> => {
+    if (!selectedFile) return false;
     try {
       if (editorMode === "yaml") {
         await api.saveScenarioRaw(selectedFile, yamlContent);
@@ -124,8 +134,10 @@ export default function App() {
       setDirty(false);
       loadScenarios();
       notify("Scenario saved", "success");
+      return true;
     } catch (e) {
       notify(`Failed to save: ${e instanceof Error ? e.message : "Unknown error"}`);
+      return false;
     }
   }, [selectedFile, editorMode, yamlContent, scenario, loadScenarios, notify]);
 
@@ -137,7 +149,10 @@ export default function App() {
     setRunResult(null);
     try {
       // Save first if dirty
-      if (dirty) await saveScenario();
+      if (dirty) {
+        const saved = await saveScenario();
+        if (!saved) return;
+      }
       const result = await api.runScenario(
         selectedFile,
         activeEnv ?? undefined
@@ -257,6 +272,11 @@ export default function App() {
 
         {/* Main editor area */}
         <main className="flex-1 flex flex-col overflow-hidden">
+          {(loadErrors.scenarios || loadErrors.environments) && (
+            <div className="px-4 py-2 text-xs text-error bg-error/10 border-b border-error/20">
+              Backend data could not be fully loaded. Check the desktop backend connection.
+            </div>
+          )}
           {selectedFile && scenario ? (
             <>
               <Editor

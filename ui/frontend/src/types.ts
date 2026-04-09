@@ -32,9 +32,29 @@ export interface Transition {
   to: string;
 }
 
+export interface TransitionCondition {
+  status?: number | ValueCheck | Record<string, unknown>;
+  body?: Record<string, ValueCheck | Record<string, unknown>>;
+  assertions?: "passed" | "failed";
+}
+
+export interface TransitionEdge {
+  to: string;
+  when?: TransitionCondition;
+  default?: boolean;
+}
+
 export interface RetryConfig {
   attempts: number;
   delay_ms: number;
+}
+
+export interface MultipartFieldDef {
+  name: string;
+  value?: string;
+  file?: string;
+  filename?: string;
+  mime?: string;
 }
 
 export interface ValueCheck {
@@ -65,9 +85,12 @@ export interface Step {
   name: string;
   method: string;
   url: string;
-  transition: Transition;
+  transition?: Transition;
+  transitions?: TransitionEdge[];
+  state?: string;
   headers?: Record<string, string>;
   body?: unknown;
+  multipart?: MultipartFieldDef[];
   extract?: Record<string, string>;
   retry?: RetryConfig;
   assert?: Assertion[];
@@ -88,6 +111,8 @@ export interface Scenario {
   proxy?: string;
   insecure?: boolean;
   default_timeout_ms?: number;
+  max_iterations?: number;
+  terminal_states?: string[];
 }
 
 export function isScenario(value: unknown): value is Scenario {
