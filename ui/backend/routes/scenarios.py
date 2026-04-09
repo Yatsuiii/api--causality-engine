@@ -3,7 +3,7 @@
 import logging
 from fastapi import APIRouter, HTTPException
 from pathlib import Path
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from typing import Optional
 import yaml
 
@@ -20,7 +20,7 @@ class CreateScenarioRequest(BaseModel):
     name: str = "untitled"
     scenario: Optional[dict] = None
     initial_state: str = "start"
-    steps: list = []
+    steps: list = Field(default_factory=list)
 
 
 class UpdateScenarioRequest(BaseModel):

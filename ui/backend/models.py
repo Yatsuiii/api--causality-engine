@@ -1,7 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
-from typing import Optional
-from datetime import datetime
+from typing import Literal, Optional
 
 
 # ── Auth models ──────────────────────────────────────────────────────
@@ -52,7 +51,9 @@ class ValueCheck(BaseModel):
     exists: Optional[bool] = None
     lt: Optional[float] = None
     gt: Optional[float] = None
-    in_list: Optional[list] = None
+    in_list: Optional[list] = Field(default=None, alias="in")
+
+    model_config = {"populate_by_name": True}
 
 
 class Assertion(BaseModel):
@@ -69,13 +70,36 @@ class Hook(BaseModel):
     skip_if: Optional[str] = None
 
 
+class MultipartFieldDef(BaseModel):
+    name: str
+    value: Optional[str] = None
+    file: Optional[str] = None
+    filename: Optional[str] = None
+    mime: Optional[str] = None
+
+
+class TransitionCondition(BaseModel):
+    status: Optional[int | ValueCheck | dict] = None
+    body: Optional[dict[str, ValueCheck | dict]] = None
+    assertions: Optional[Literal["passed", "failed"]] = None
+
+
+class TransitionEdge(BaseModel):
+    to: str
+    when: Optional[TransitionCondition] = None
+    default: Optional[bool] = None
+
+
 class Step(BaseModel):
     name: str
     method: str
     url: str
-    transition: Transition
+    transition: Optional[Transition] = None
+    transitions: Optional[list[TransitionEdge]] = None
+    state: Optional[str] = None
     headers: Optional[dict[str, str]] = None
     body: Optional[object] = None
+    multipart: Optional[list[MultipartFieldDef]] = None
     extract: Optional[dict[str, str]] = None
     retry: Optional[RetryConfig] = None
     assertions: Optional[list[Assertion]] = Field(None, alias="assert")
@@ -98,6 +122,8 @@ class Scenario(BaseModel):
     proxy: Optional[str] = None
     insecure: Optional[bool] = None
     default_timeout_ms: Optional[int] = None
+    max_iterations: Optional[int] = None
+    terminal_states: Optional[list[str]] = None
 
 
 # ── Execution results ────────────────────────────────────────────────
@@ -117,13 +143,13 @@ class StepLog(BaseModel):
     url: str = ""
     status: int = 0
     duration_ms: int = 0
-    assertions: list[AssertionResult] = []
+    assertions: list[AssertionResult] = Field(default_factory=list)
     request_body: Optional[str] = None
     response_body: Optional[str] = None
 
 
 class ExecutionLog(BaseModel):
-    steps: list[StepLog] = []
+    steps: list[StepLog] = Field(default_factory=list)
     total_duration_ms: int = 0
     total_steps: int = 0
     passed: int = 0
@@ -134,7 +160,7 @@ class ExecutionLog(BaseModel):
 
 class Environment(BaseModel):
     name: str
-    variables: dict[str, str] = {}
+    variables: dict[str, str] = Field(default_factory=dict)
 
 
 # ── History ──────────────────────────────────────────────────────────
@@ -149,4 +175,4 @@ class HistoryEntry(BaseModel):
     total_steps: int = 0
     passed: int = 0
     failed: int = 0
-    log: ExecutionLog = ExecutionLog()
+    log: ExecutionLog = Field(default_factory=ExecutionLog)
