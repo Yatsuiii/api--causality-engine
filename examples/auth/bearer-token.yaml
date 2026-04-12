@@ -1,31 +1,42 @@
-name: token flow
-initial_state: start
+name: bearer token flow
+initial_state: create_post
+
+auth:
+  bearer: "{{api_token}}"
+
+variables:
+  api_token: my-secret-token
+  base_url: https://jsonplaceholder.typicode.com
+
 steps:
   - name: create post
     method: POST
-    url: https://jsonplaceholder.typicode.com/posts
+    url: "{{base_url}}/posts"
     headers:
       Content-Type: application/json
     body:
-      title: "Test Post"
-      body: "Hello World"
+      title: "ACE Test"
+      body: "Sent with bearer auth"
       userId: 1
     assert:
       - status: 201
-    extract:
-      id: "id"
-    transition:
-      from: start
-      to: logged_in
-
-  - name: get post
-    method: GET
-    url: https://jsonplaceholder.typicode.com/posts/1
-    assert:
-      - status: 200
       - body:
           id:
             exists: true
+    extract:
+      post_id: "id"
     transition:
-      from: logged_in
+      from: create_post
+      to: fetch_post
+
+  - name: fetch post
+    method: GET
+    url: "{{base_url}}/posts/{{post_id}}"
+    assert:
+      - status: 200
+      - body:
+          userId:
+            exists: true
+    transition:
+      from: fetch_post
       to: done

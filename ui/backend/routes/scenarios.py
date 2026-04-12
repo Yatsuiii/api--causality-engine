@@ -1,16 +1,17 @@
 """Scenario CRUD routes — list, read, create, update, delete YAML files."""
 
 import logging
-from fastapi import APIRouter, HTTPException
 from pathlib import Path
-from pydantic import BaseModel, Field, ValidationError
-from typing import Optional
+
 import yaml
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field, ValidationError
 
 from models import Scenario
 from services.storage import scenarios_dir
 
 logger = logging.getLogger(__name__)
+router = APIRouter()
 
 
 # ── Request models ──────────────────────────────────────────────────
@@ -18,22 +19,17 @@ logger = logging.getLogger(__name__)
 
 class CreateScenarioRequest(BaseModel):
     name: str = "untitled"
-    scenario: Optional[dict] = None
+    scenario: dict | None = None
     initial_state: str = "start"
     steps: list = Field(default_factory=list)
 
 
 class UpdateScenarioRequest(BaseModel):
-    scenario: Optional[dict] = None
-    name: Optional[str] = None
-    initial_state: Optional[str] = None
-    steps: Optional[list] = None
+    scenario: dict
 
 
 class RawYamlRequest(BaseModel):
     content: str
-
-router = APIRouter()
 
 
 def _validate_scenario_dict(data: dict) -> None:
@@ -180,9 +176,8 @@ def update_scenario(name: str, body: UpdateScenarioRequest):
     if not p.exists():
         raise HTTPException(404, f"Scenario '{name}' not found")
 
-    scenario_data = body.scenario if body.scenario is not None else body.model_dump(exclude_none=True)
-    _validate_scenario_dict(scenario_data)
-    yaml_content = yaml.dump(scenario_data, default_flow_style=False, sort_keys=False)
+    _validate_scenario_dict(body.scenario)
+    yaml_content = yaml.dump(body.scenario, default_flow_style=False, sort_keys=False)
     p.write_text(yaml_content, encoding="utf-8")
     return {"file": p.name, "status": "updated"}
 

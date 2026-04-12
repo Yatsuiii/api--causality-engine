@@ -1,6 +1,7 @@
 import {
   Play,
   Save,
+  ShieldCheck,
   Clock,
   Globe,
   ChevronDown,
@@ -19,7 +20,9 @@ interface TopBarProps {
   onEnvChange: (env: string | null) => void;
   onRun: () => void;
   onSave: () => void;
+  onValidate: () => void;
   isRunning: boolean;
+  isValidating: boolean;
   dirty: boolean;
   hasScenario: boolean;
   onToggleHistory: () => void;
@@ -34,7 +37,9 @@ export default function TopBar({
   onEnvChange,
   onRun,
   onSave,
+  onValidate,
   isRunning,
+  isValidating,
   dirty,
   hasScenario,
   onToggleHistory,
@@ -66,7 +71,7 @@ export default function TopBar({
             ⚡ ACE
           </span>
           <span className="text-[0.65rem] font-mono text-text-muted bg-bg-surface px-1.5 py-0.5 rounded">
-            v0.1
+            v0.1.4
           </span>
         </div>
 
@@ -141,11 +146,27 @@ export default function TopBar({
           )}
         </button>
 
+        {/* Validate button */}
+        <button
+          id="validate-btn"
+          onClick={onValidate}
+          disabled={!hasScenario || isRunning || isValidating}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-border transition-all duration-150 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-bg-hover text-text-secondary hover:text-text-primary"
+          title="Validate scenario"
+        >
+          {isValidating ? (
+            <Loader2 size={13} className="animate-spin" />
+          ) : (
+            <ShieldCheck size={13} />
+          )}
+          <span>{isValidating ? "Validating..." : "Validate"}</span>
+        </button>
+
         {/* Run button */}
         <button
           id="run-btn"
           onClick={onRun}
-          disabled={!hasScenario || isRunning}
+          disabled={!hasScenario || isRunning || isValidating}
           className={`flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-lg transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed ${
             isRunning
               ? "bg-accent/20 text-accent animate-pulse-glow"

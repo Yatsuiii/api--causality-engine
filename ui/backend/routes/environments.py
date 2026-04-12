@@ -1,16 +1,28 @@
 """Environment routes — CRUD for named variable sets."""
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from models import Environment
 from services.storage import (
-    list_environments,
-    get_environment,
-    save_environment,
     delete_environment,
+    get_environment,
+    list_environments,
+    save_environment,
 )
 
 router = APIRouter()
+
+
+class CreateEnvironmentBody(BaseModel):
+    name: str
+    variables: dict[str, str] = Field(default_factory=dict)
+
+
+class UpdateEnvironmentBody(BaseModel):
+    variables: dict[str, str]
 
 
 @router.get("")
@@ -29,27 +41,24 @@ def get_env(name: str):
 
 
 @router.post("")
-def create_env(body: dict):
+def create_env(body: CreateEnvironmentBody):
     """Create a new environment."""
-    name = body.get("name")
-    if not name:
-        raise HTTPException(400, "Environment name is required")
-    if get_environment(name) is not None:
-        raise HTTPException(409, f"Environment '{name}' already exists")
-    env = Environment(name=name, variables=body.get("variables", {}))
+    if get_environment(body.name) is not None:
+        raise HTTPException(409, f"Environment '{body.name}' already exists")
+    env = Environment(name=body.name, variables=body.variables)
     save_environment(env)
     return env.model_dump()
 
 
 @router.put("/{name}")
-def update_env(name: str, body: dict):
-    """Update an existing environment."""
+def update_env(name: str, body: UpdateEnvironmentBody):
+    """Update an existing environment's variables."""
     existing = get_environment(name)
     if existing is None:
         raise HTTPException(404, f"Environment '{name}' not found")
-    existing.variables = body.get("variables", existing.variables)
-    save_environment(existing)
-    return existing.model_dump()
+    updated = Environment(name=existing.name, variables=body.variables)
+    save_environment(updated)
+    return updated.model_dump()
 
 
 @router.delete("/{name}")

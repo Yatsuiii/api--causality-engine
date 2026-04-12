@@ -3,10 +3,10 @@
 from fastapi import APIRouter, HTTPException
 
 from services.storage import (
-    list_history,
-    get_history_entry,
+    clear_history,
     delete_history_entry,
-    history_dir,
+    get_history_entry,
+    list_history,
 )
 
 router = APIRouter()
@@ -15,8 +15,7 @@ router = APIRouter()
 @router.get("")
 def list_entries(limit: int = 50):
     """List past execution entries, newest first."""
-    entries = list_history(limit=limit)
-    return [e.model_dump() for e in entries]
+    return [e.model_dump() for e in list_history(limit=limit)]
 
 
 @router.get("/{entry_id}")
@@ -39,9 +38,5 @@ def delete_entry(entry_id: str):
 @router.delete("")
 def clear_all():
     """Clear all history entries."""
-    d = history_dir()
-    count = 0
-    for f in d.glob("*.json"):
-        f.unlink()
-        count += 1
-    return {"status": "cleared", "deleted": count}
+    deleted = clear_history()
+    return {"status": "cleared", "deleted": deleted}

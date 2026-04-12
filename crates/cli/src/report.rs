@@ -140,11 +140,13 @@ fn percentile(sorted: &[u64], pct: usize) -> u64 {
     sorted[idx]
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
+fn truncate(s: &str, max_chars: usize) -> String {
+    let mut chars = s.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{}...", head)
     } else {
-        format!("{}...", &s[..max])
+        head
     }
 }
 

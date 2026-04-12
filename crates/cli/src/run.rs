@@ -1,4 +1,3 @@
-use crate::debug_log;
 use crate::error::{CliError, load_scenario_file};
 use crate::report;
 use ace_core::validate::validate_scenario;
@@ -20,27 +19,6 @@ pub struct RunArgs {
 }
 
 pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
-    // #region agent log
-    debug_log::emit(
-        "pre-fix",
-        "H1",
-        "crates/cli/src/run.rs:cmd_run",
-        "run_enter",
-        serde_json::json!({
-            "scenario_path": args.scenario,
-            "env_path_set": args.env.is_some(),
-            "vars_count": args.vars.len(),
-            "var_keys": args.vars.iter().map(|(k, _)| k).collect::<Vec<_>>(),
-            "verbose": args.verbose,
-            "quiet": args.quiet,
-            "output": args.output,
-            "junit_set": args.junit.is_some(),
-            "insecure": args.insecure,
-            "proxy_set": args.proxy.is_some(),
-        }),
-    );
-    // #endregion
-
     // Setup tracing
     let filter = if args.verbose {
         "runner=debug,ace_core=debug,ace_http=debug,info"
@@ -61,45 +39,14 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
     // Load .env file
     if let Some(env_path) = &args.env {
         dotenvy::from_filename(env_path).ok();
-        // #region agent log
-        debug_log::emit(
-            "pre-fix",
-            "H1",
-            "crates/cli/src/run.rs:cmd_run",
-            "dotenv_loaded_from_file",
-            serde_json::json!({"env_path": env_path}),
-        );
-        // #endregion
     } else {
         dotenvy::dotenv().ok();
-        // #region agent log
-        debug_log::emit(
-            "pre-fix",
-            "H1",
-            "crates/cli/src/run.rs:cmd_run",
-            "dotenv_loaded_default",
-            serde_json::json!({}),
-        );
-        // #endregion
     }
 
     // Load & validate scenario
     let scenario = load_scenario_file(&args.scenario)?;
 
     let issues = validate_scenario(&scenario);
-    // #region agent log
-    debug_log::emit(
-        "pre-fix",
-        "H2",
-        "crates/cli/src/run.rs:cmd_run",
-        "scenario_validated",
-        serde_json::json!({
-            "scenario_name": scenario.name,
-            "steps": scenario.steps.len(),
-            "issues": issues.len(),
-        }),
-    );
-    // #endregion
     if !issues.is_empty() {
         return Err(CliError::Validation(issues));
     }
@@ -149,19 +96,7 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
     };
 
     let results = runner::run(&scenario, &config).await;
-    // #region agent log
     let has_failures = results.iter().any(|(log, r)| log.failed > 0 || r.is_err());
-    debug_log::emit(
-        "pre-fix",
-        "H3",
-        "crates/cli/src/run.rs:cmd_run",
-        "runner_completed",
-        serde_json::json!({
-            "executions": results.len(),
-            "has_failures": has_failures,
-        }),
-    );
-    // #endregion
 
     if !args.quiet {
         for (i, (log, _)) in results.iter().enumerate() {

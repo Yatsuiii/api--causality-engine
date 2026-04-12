@@ -1,6 +1,21 @@
 import { X, Trash2, Clock, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import type { HistoryEntry } from "../types";
 
+function formatEntryTime(isoString: string): string {
+  const d = new Date(isoString);
+  const now = new Date();
+  const isToday =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (isToday) {
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  return d.toLocaleDateString([], { month: "short", day: "numeric" }) +
+    " " +
+    d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 interface HistoryPanelProps {
   history: HistoryEntry[];
   loading?: boolean;
@@ -63,7 +78,7 @@ export default function HistoryPanel({
                 </span>
                 <span className="text-[0.65rem] text-text-muted flex items-center gap-1">
                   <Clock size={10} />
-                  {new Date(entry.started_at).toLocaleTimeString()}
+                  {formatEntryTime(entry.started_at)}
                 </span>
               </div>
               

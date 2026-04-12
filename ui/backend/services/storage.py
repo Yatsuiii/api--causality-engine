@@ -1,8 +1,9 @@
 """File-based storage for workspace, environments, and history."""
 
+import json
 import threading
 from pathlib import Path
-import json
+
 from models import Environment, HistoryEntry
 
 _workspace_lock = threading.Lock()
@@ -100,3 +101,13 @@ def delete_history_entry(entry_id: str) -> bool:
         f.unlink()
         return True
     return False
+
+
+def clear_history() -> int:
+    """Delete all history entries. Returns the number of files removed."""
+    d = history_dir()
+    count = 0
+    for f in d.glob("*.json"):
+        f.unlink()
+        count += 1
+    return count

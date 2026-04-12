@@ -388,7 +388,8 @@ async fn execute_step(
 
     // Build request body
     let body = step.body.as_ref().map(|b| {
-        let json_str = serde_json::to_string(b).unwrap_or_default();
+        let json_str = serde_json::to_string(b)
+            .expect("step body is a serde_yaml::Value that parsed cleanly — serialization cannot fail");
         resolve_template(&json_str, context)
     });
 
@@ -609,7 +610,8 @@ async fn run_linear_mode(
     let mut current_state = scenario.initial_state.clone();
 
     for step in &scenario.steps {
-        let transition = step.transition.as_ref().unwrap();
+        let transition = step.transition.as_ref()
+            .expect("run_linear_mode is only called after validate_scenario confirms linear layout");
 
         // Validate state transition
         if transition.from != current_state {
@@ -753,7 +755,8 @@ async fn run_graph_mode(
         {
             Ok(result) => {
                 // Evaluate transitions to determine next state
-                let (_, edges) = step.resolved_edges().unwrap();
+                let (_, edges) = step.resolved_edges()
+                    .expect("run_graph_mode is only called after validate_scenario confirms graph layout");
                 let next_state = match evaluate_transitions(
                     &edges,
                     &result.response,
@@ -801,7 +804,8 @@ async fn run_graph_mode(
             }
             Err(RunError::Skipped { .. }) => {
                 // Skipped step: take default transition
-                let (_, edges) = step.resolved_edges().unwrap();
+                let (_, edges) = step.resolved_edges()
+                    .expect("run_graph_mode is only called after validate_scenario confirms graph layout");
                 let next_state = edges
                     .iter()
                     .find(|e| e.default.unwrap_or(false))
@@ -834,23 +838,29 @@ fn apply_auth(
 ) {
     if let Some(bearer) = &auth.bearer {
         let token = resolve_template(bearer, context);
-        headers.insert("Authorization".into(), format!("Bearer {}", token));
+        headers
+            .entry("Authorization".into())
+            .or_insert_with(|| format!("Bearer {}", token));
     }
     if let Some(basic) = &auth.basic {
         let user = resolve_template(&basic.username, context);
         let pass = resolve_template(&basic.password, context);
         let encoded = BASE64.encode(format!("{}:{}", user, pass));
-        headers.insert("Authorization".into(), format!("Basic {}", encoded));
+        headers
+            .entry("Authorization".into())
+            .or_insert_with(|| format!("Basic {}", encoded));
     }
     if let Some(api_key) = &auth.api_key {
         let header = resolve_template(&api_key.header, context);
         let value = resolve_template(&api_key.value, context);
-        headers.insert(header, value);
+        headers.entry(header).or_insert(value);
     }
     if auth.oauth2.is_some()
         && let Some(token) = context.get("$oauth_token")
     {
-        headers.insert("Authorization".into(), format!("Bearer {}", token));
+        headers
+            .entry("Authorization".into())
+            .or_insert_with(|| format!("Bearer {}", token));
     }
 }
 
@@ -910,7 +920,7 @@ pub async fn run(
 
     let mut results = Vec::new();
     for handle in handles {
-        let result = handle.await.unwrap();
+        let result = handle.await.expect("runner task panicked");
         results.push(result);
     }
 

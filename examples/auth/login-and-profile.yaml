@@ -1,10 +1,14 @@
-name: login flow
-initial_state: start
+name: login and fetch profile
+initial_state: login
 concurrency: 3
+
+variables:
+  base_url: https://jsonplaceholder.typicode.com
+
 steps:
   - name: login
     method: POST
-    url: https://jsonplaceholder.typicode.com/posts
+    url: "{{base_url}}/posts"
     headers:
       Content-Type: application/json
     body:
@@ -14,14 +18,16 @@ steps:
     assert:
       - status: 201
     extract:
-      post_id: "id"
+      session_token: "id"
     transition:
-      from: start
-      to: authenticated
+      from: login
+      to: fetch_profile
 
-  - name: get profile
+  - name: fetch profile
     method: GET
-    url: https://jsonplaceholder.typicode.com/users/1
+    url: "{{base_url}}/users/1"
+    headers:
+      X-Session-Token: "{{session_token}}"
     assert:
       - status: 200
       - body:
@@ -35,5 +41,5 @@ steps:
       username: "username"
       email: "email"
     transition:
-      from: authenticated
+      from: fetch_profile
       to: done

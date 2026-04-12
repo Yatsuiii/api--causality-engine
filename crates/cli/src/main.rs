@@ -1,4 +1,3 @@
-mod debug_log;
 mod docs;
 mod error;
 mod import;
@@ -155,27 +154,6 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
 async fn main() {
     let cli = Cli::parse();
 
-    // #region agent log
-    debug_log::emit(
-        "pre-fix",
-        "H0",
-        "crates/cli/src/main.rs:main",
-        "cli_parsed",
-        serde_json::json!({
-            "command": match &cli.command {
-                Commands::Run { .. } => "run",
-                Commands::Replay { .. } => "replay",
-                Commands::Validate { .. } => "validate",
-                Commands::Report { .. } => "report",
-                Commands::Import { .. } => "import",
-                Commands::Mock { .. } => "mock",
-                Commands::Init { .. } => "init",
-                Commands::Docs { .. } => "docs",
-            }
-        }),
-    );
-    // #endregion
-
     let result = match cli.command {
         Commands::Run {
             scenario,
@@ -215,18 +193,6 @@ async fn main() {
     };
 
     if let Err(e) = result {
-        // #region agent log
-        debug_log::emit(
-            "pre-fix",
-            "H4",
-            "crates/cli/src/main.rs:main",
-            "cli_exit_error",
-            serde_json::json!({
-                "error_variant": format!("{:?}", e),
-                "exit_code": e.exit_code(),
-            }),
-        );
-        // #endregion
         process::exit(e.report());
     }
 }

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ace"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "ace-core",
  "ace-http",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "ace-core"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "ace-http",
  "base64",
@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "ace-http"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "reqwest",
  "serde",
@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "model"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -1159,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "runner"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "ace-core",
  "ace-http",

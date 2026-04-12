@@ -1,4 +1,3 @@
-use crate::debug_log;
 use colored::Colorize;
 use std::fmt;
 
@@ -63,64 +62,22 @@ impl CliError {
 
 /// Read a file to string, mapping the IO error.
 pub fn read_file(path: &str) -> Result<String, CliError> {
-    std::fs::read_to_string(path).map_err(|e| {
-        // #region agent log
-        debug_log::emit(
-            "pre-fix",
-            "H1",
-            "crates/cli/src/error.rs:read_file",
-            "read_file_failed",
-            serde_json::json!({
-                "path": path,
-                "error_kind": format!("{:?}", e.kind()),
-            }),
-        );
-        // #endregion
-        CliError::Io {
-            path: path.to_string(),
-            source: e,
-        }
+    std::fs::read_to_string(path).map_err(|e| CliError::Io {
+        path: path.to_string(),
+        source: e,
     })
 }
 
 /// Read + parse a scenario YAML in one shot.
 pub fn load_scenario_file(path: &str) -> Result<model::Scenario, CliError> {
     let yaml = read_file(path)?;
-    model::load_scenario(&yaml).map_err(|e| {
-        // #region agent log
-        debug_log::emit(
-            "pre-fix",
-            "H1",
-            "crates/cli/src/error.rs:load_scenario_file",
-            "scenario_yaml_parse_failed",
-            serde_json::json!({
-                "path": path,
-                "error": e.to_string(),
-            }),
-        );
-        // #endregion
-        CliError::YamlParse(e)
-    })
+    model::load_scenario(&yaml).map_err(|e| CliError::YamlParse(e))
 }
 
 /// Read + parse an execution-log JSON in one shot.
 pub fn load_execution_log(path: &str) -> Result<Vec<runner::ExecutionLog>, CliError> {
     let json = read_file(path)?;
-    serde_json::from_str(&json).map_err(|e| {
-        // #region agent log
-        debug_log::emit(
-            "pre-fix",
-            "H1",
-            "crates/cli/src/error.rs:load_execution_log",
-            "execution_log_json_parse_failed",
-            serde_json::json!({
-                "path": path,
-                "error": e.to_string(),
-            }),
-        );
-        // #endregion
-        CliError::JsonParse(e)
-    })
+    serde_json::from_str(&json).map_err(|e| CliError::JsonParse(e))
 }
 
 /// Write bytes to a file, mapping the IO error.

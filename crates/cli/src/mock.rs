@@ -56,7 +56,8 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) -> Result<(), CliError> {
         }
 
         let response_body =
-            serde_json::to_string_pretty(&serde_json::Value::Object(mock_body)).unwrap();
+            serde_json::to_string_pretty(&serde_json::Value::Object(mock_body))
+                .expect("serialization of in-memory serde_json::Map cannot fail");
 
         let mut response_headers = HashMap::new();
         response_headers.insert("Content-Type".into(), "application/json".into());

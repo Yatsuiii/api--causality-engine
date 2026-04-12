@@ -59,7 +59,7 @@ export default function RunPanel({ result, isRunning, onClose }: RunPanelProps) 
               <div key={idx} className="bg-bg-surface rounded-lg border border-border overflow-hidden">
                 <div className="flex items-center justify-between p-3 border-b border-border bg-bg-secondary/30">
                   <div className="flex items-center gap-3">
-                    <span className={`px-2 py-0.5 rounded textxs font-mono font-medium ${
+                    <span className={`px-2 py-0.5 rounded text-xs font-mono font-medium ${
                       step.status >= 200 && step.status < 300 
                         ? 'bg-success/10 text-success border border-success/20' 
                         : 'bg-error/10 text-error border border-error/20'

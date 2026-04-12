@@ -28,8 +28,8 @@ export default function Editor({
   onYamlChange,
 }: EditorProps) {
   const [showMeta, setShowMeta] = useState(false);
-  const stepsList: Step[] = scenario?.steps ?? [];
-  const initialState = scenario?.initial_state ?? "start";
+  const stepsList = scenario.steps;
+  const initialState = scenario.initial_state;
 
   /* ── Stable keys for steps (survives reorder) ─────────────────── */
   const nextKeyId = useRef(0);
@@ -56,7 +56,7 @@ export default function Editor({
   const addStep = () => {
     const lastState =
       stepsList.length > 0
-        ? stepsList[stepsList.length - 1].transition.to
+        ? getStepExitState(stepsList[stepsList.length - 1])
         : initialState;
     const newStep: Step = {
       name: `step ${stepsList.length + 1}`,
@@ -85,14 +85,18 @@ export default function Editor({
   const stateNodes = new Set<string>();
   stateNodes.add(initialState);
   stepsList.forEach((s) => {
-    stateNodes.add(s.transition.from);
-    stateNodes.add(s.transition.to);
+    if (s.transition) {
+      stateNodes.add(s.transition.from);
+      stateNodes.add(s.transition.to);
+    }
+    if (s.transitions && s.transitions.length > 0) {
+      stateNodes.add(s.state ?? s.name);
+      s.transitions.forEach((edge) => stateNodes.add(edge.to));
+    }
   });
   const statesArray = Array.from(stateNodes);
 
   return (
-    
-    
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Editor toolbar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-bg-secondary/30 shrink-0">
@@ -324,4 +328,10 @@ export default function Editor({
       </div>
     </div>
   );
+}
+
+function getStepExitState(step: Step): string {
+  if (step.transition) return step.transition.to;
+  const defaultEdge = step.transitions?.find((edge) => edge.default);
+  return defaultEdge?.to ?? step.transitions?.[0]?.to ?? "done";
 }

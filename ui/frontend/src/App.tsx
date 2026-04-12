@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { ScenarioListItem, Scenario, HistoryEntry, Environment } from "./types";
+import { X } from "lucide-react";
+import type { ScenarioListItem, Scenario, HistoryEntry, Environment, ValidationResult } from "./types";
 import { isScenario } from "./types";
 import * as api from "./hooks/useApi";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
 import Editor from "./components/Editor";
+import ErrorBoundary from "./components/ErrorBoundary";
 import RunPanel from "./components/RunPanel";
 import HistoryPanel from "./components/HistoryPanel";
 import EnvManager from "./components/EnvManager";
@@ -33,6 +35,9 @@ export default function App() {
   const [runResult, setRunResult] = useState<HistoryEntry | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [showRunPanel, setShowRunPanel] = useState(false);
+  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
+  const [showValidationPanel, setShowValidationPanel] = useState(false);
 
   const [rightPanel, setRightPanel] = useState<RightPanel>("none");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -111,6 +116,8 @@ export default function App() {
       setDirty(false);
       setShowRunPanel(false);
       setRunResult(null);
+      setShowValidationPanel(false);
+      setValidationResult(null);
     } catch (e) {
       notify(`Failed to load scenario: ${e instanceof Error ? e.message : "Unknown error"}`);
     }
@@ -165,6 +172,27 @@ export default function App() {
     }
   }, [selectedFile, activeEnv, dirty, saveScenario]);
 
+  /* ── Validate ───────────────────────────────────────────────────── */
+  const handleValidate = useCallback(async () => {
+    if (!selectedFile) return;
+    setIsValidating(true);
+    setShowValidationPanel(true);
+    setValidationResult(null);
+    try {
+      if (dirty) {
+        const saved = await saveScenario();
+        if (!saved) return;
+      }
+      const result = await api.validateScenario(selectedFile);
+      setValidationResult(result);
+      notify(result.valid ? "Scenario is valid" : "Scenario has validation errors", result.valid ? "success" : "error");
+    } catch (e) {
+      notify(`Validation failed: ${e instanceof Error ? e.message : "Unknown error"}`);
+    } finally {
+      setIsValidating(false);
+    }
+  }, [selectedFile, dirty, saveScenario, notify]);
+
   /* ── Create scenario ─────────────────────────────────────────────── */
   const handleCreate = useCallback(async (name: string) => {
     try {
@@ -174,7 +202,7 @@ export default function App() {
         steps: [],
       });
       await loadScenarios();
-      selectScenario(res.file);
+      await selectScenario(res.file);
     } catch (e) {
       notify(`Failed to create: ${e instanceof Error ? e.message : "Unknown error"}`);
     }
@@ -200,7 +228,7 @@ export default function App() {
     try {
       const res = await api.duplicateScenario(file);
       await loadScenarios();
-      selectScenario(res.file);
+      await selectScenario(res.file);
     } catch (e) {
       notify(`Failed to duplicate: ${e instanceof Error ? e.message : "Unknown error"}`);
     }
@@ -251,7 +279,9 @@ export default function App() {
         onEnvChange={setActiveEnv}
         onRun={handleRun}
         onSave={saveScenario}
+        onValidate={handleValidate}
         isRunning={isRunning}
+        isValidating={isValidating}
         dirty={dirty}
         hasScenario={!!selectedFile}
         onToggleHistory={() => togglePanel("history")}
@@ -277,6 +307,7 @@ export default function App() {
               Backend data could not be fully loaded. Check the desktop backend connection.
             </div>
           )}
+          <ErrorBoundary>
           {selectedFile && scenario ? (
             <>
               <Editor
@@ -300,15 +331,24 @@ export default function App() {
                   onClose={() => setShowRunPanel(false)}
                 />
               )}
+              {showValidationPanel && (
+                <ValidationPanel
+                  result={validationResult}
+                  isValidating={isValidating}
+                  onClose={() => setShowValidationPanel(false)}
+                />
+              )}
             </>
           ) : (
             <EmptyState onQuickOpen={() => {
               if (scenarios.length > 0) selectScenario(scenarios[0].file);
             }} />
           )}
+          </ErrorBoundary>
         </main>
 
         {/* Right panel */}
+        <ErrorBoundary>
         {rightPanel === "history" && (
           <HistoryPanel
             history={history}
@@ -338,6 +378,7 @@ export default function App() {
             onRefresh={loadEnvironments}
           />
         )}
+        </ErrorBoundary>
       </div>
 
       {/* Toast notifications */}
@@ -380,6 +421,59 @@ function EmptyState({ onQuickOpen }: { onQuickOpen: () => void }) {
         >
           Open First Scenario
         </button>
+      </div>
+    </div>
+  );
+}
+
+function ValidationPanel({
+  result,
+  isValidating,
+  onClose,
+}: {
+  result: ValidationResult | null;
+  isValidating: boolean;
+  onClose: () => void;
+}) {
+  const output = result ? [result.stdout, result.stderr].filter(Boolean).join("\n") : "";
+
+  return (
+    <div className="h-48 border-t border-border bg-bg-secondary flex flex-col animate-slide-up shrink-0">
+      <div className="flex items-center justify-between p-3 border-b border-border bg-bg-surface/50">
+        <div className="flex items-center gap-3">
+          <h3 className="font-semibold text-text-primary text-sm">Validation</h3>
+          {isValidating && (
+            <span className="text-xs text-text-muted">Checking scenario...</span>
+          )}
+          {result && (
+            <span className={`text-xs font-medium ${result.valid ? "text-success" : "text-error"}`}>
+              {result.valid ? "Valid" : `Failed with exit code ${result.exit_code}`}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={onClose}
+          className="text-text-muted hover:text-text-primary p-1 rounded hover:bg-bg-hover transition-colors"
+        >
+          <X size={16} />
+        </button>
+      </div>
+      <div className="flex-1 overflow-auto p-4 bg-bg-primary">
+        {isValidating ? (
+          <div className="h-full flex items-center justify-center text-text-muted text-sm">
+            Validating scenario...
+          </div>
+        ) : output ? (
+          <pre className="text-xs text-text-secondary whitespace-pre-wrap font-mono">{output}</pre>
+        ) : result ? (
+          <div className="h-full flex items-center justify-center text-success text-sm">
+            No validation issues found.
+          </div>
+        ) : (
+          <div className="h-full flex items-center justify-center text-text-muted text-sm">
+            Validate a scenario to see CLI output here.
+          </div>
+        )}
       </div>
     </div>
   );
