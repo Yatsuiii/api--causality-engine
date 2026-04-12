@@ -1,6 +1,7 @@
 from __future__ import annotations
+from typing import Literal
+
 from pydantic import BaseModel, Field
-from typing import Literal, Optional
 
 
 # ── Auth models ──────────────────────────────────────────────────────
@@ -19,15 +20,15 @@ class OAuth2Config(BaseModel):
     token_url: str
     client_id: str
     client_secret: str
-    scope: Optional[str] = None
-    grant_type: Optional[str] = None
+    scope: str | None = None
+    grant_type: str | None = None
 
 
 class Auth(BaseModel):
-    bearer: Optional[str] = None
-    basic: Optional[BasicAuth] = None
-    api_key: Optional[ApiKeyAuth] = None
-    oauth2: Optional[OAuth2Config] = None
+    bearer: str | None = None
+    basic: BasicAuth | None = None
+    api_key: ApiKeyAuth | None = None
+    oauth2: OAuth2Config | None = None
 
 
 # ── Step models ──────────────────────────────────────────────────────
@@ -45,67 +46,67 @@ class RetryConfig(BaseModel):
 
 
 class ValueCheck(BaseModel):
-    eq: Optional[object] = None
-    ne: Optional[object] = None
-    contains: Optional[str] = None
-    exists: Optional[bool] = None
-    lt: Optional[float] = None
-    gt: Optional[float] = None
-    in_list: Optional[list] = Field(default=None, alias="in")
+    eq: object | None = None
+    ne: object | None = None
+    contains: str | None = None
+    exists: bool | None = None
+    lt: float | None = None
+    gt: float | None = None
+    in_list: list | None = Field(default=None, alias="in")
 
     model_config = {"populate_by_name": True}
 
 
 class Assertion(BaseModel):
-    status: Optional[int | dict] = None
-    body: Optional[dict[str, ValueCheck | dict]] = None
-    header: Optional[dict[str, ValueCheck | dict]] = None
-    response_time_ms: Optional[ValueCheck | dict] = None
+    status: int | dict | None = None
+    body: dict[str, ValueCheck | dict] | None = None
+    header: dict[str, ValueCheck | dict] | None = None
+    response_time_ms: ValueCheck | dict | None = None
 
 
 class Hook(BaseModel):
-    set: Optional[dict[str, str]] = None
-    log: Optional[str] = None
-    delay_ms: Optional[int] = None
-    skip_if: Optional[str] = None
+    set: dict[str, str] | None = None
+    log: str | None = None
+    delay_ms: int | None = None
+    skip_if: str | None = None
 
 
 class MultipartFieldDef(BaseModel):
     name: str
-    value: Optional[str] = None
-    file: Optional[str] = None
-    filename: Optional[str] = None
-    mime: Optional[str] = None
+    value: str | None = None
+    file: str | None = None
+    filename: str | None = None
+    mime: str | None = None
 
 
 class TransitionCondition(BaseModel):
-    status: Optional[int | ValueCheck | dict] = None
-    body: Optional[dict[str, ValueCheck | dict]] = None
-    assertions: Optional[Literal["passed", "failed"]] = None
+    status: int | ValueCheck | dict | None = None
+    body: dict[str, ValueCheck | dict] | None = None
+    assertions: Literal["passed", "failed"] | None = None
 
 
 class TransitionEdge(BaseModel):
     to: str
-    when: Optional[TransitionCondition] = None
-    default: Optional[bool] = None
+    when: TransitionCondition | None = None
+    default: bool | None = None
 
 
 class Step(BaseModel):
     name: str
     method: str
     url: str
-    transition: Optional[Transition] = None
-    transitions: Optional[list[TransitionEdge]] = None
-    state: Optional[str] = None
-    headers: Optional[dict[str, str]] = None
-    body: Optional[object] = None
-    multipart: Optional[list[MultipartFieldDef]] = None
-    extract: Optional[dict[str, str]] = None
-    retry: Optional[RetryConfig] = None
-    assertions: Optional[list[Assertion]] = Field(None, alias="assert")
-    timeout_ms: Optional[int] = None
-    pre_request: Optional[list[Hook]] = None
-    post_request: Optional[list[Hook]] = None
+    transition: Transition | None = None
+    transitions: list[TransitionEdge] | None = None
+    state: str | None = None
+    headers: dict[str, str] | None = None
+    body: object | None = None
+    multipart: list[MultipartFieldDef] | None = None
+    extract: dict[str, str] | None = None
+    retry: RetryConfig | None = None
+    assertions: list[Assertion] | None = Field(None, alias="assert")
+    timeout_ms: int | None = None
+    pre_request: list[Hook] | None = None
+    post_request: list[Hook] | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -116,14 +117,14 @@ class Scenario(BaseModel):
     name: str
     initial_state: str
     steps: list[Step]
-    concurrency: Optional[int] = None
-    auth: Optional[Auth] = None
-    variables: Optional[dict[str, str]] = None
-    proxy: Optional[str] = None
-    insecure: Optional[bool] = None
-    default_timeout_ms: Optional[int] = None
-    max_iterations: Optional[int] = None
-    terminal_states: Optional[list[str]] = None
+    concurrency: int | None = None
+    auth: Auth | None = None
+    variables: dict[str, str] | None = None
+    proxy: str | None = None
+    insecure: bool | None = None
+    default_timeout_ms: int | None = None
+    max_iterations: int | None = None
+    terminal_states: list[str] | None = None
 
 
 # ── Execution results ────────────────────────────────────────────────
@@ -131,8 +132,8 @@ class Scenario(BaseModel):
 class AssertionResult(BaseModel):
     description: str = ""
     passed: bool = True
-    expected: Optional[str] = None
-    actual: Optional[str] = None
+    expected: str | None = None
+    actual: str | None = None
 
 
 class StepLog(BaseModel):
@@ -144,8 +145,8 @@ class StepLog(BaseModel):
     status: int = 0
     duration_ms: int = 0
     assertions: list[AssertionResult] = Field(default_factory=list)
-    request_body: Optional[str] = None
-    response_body: Optional[str] = None
+    request_body: str | None = None
+    response_body: str | None = None
 
 
 class ExecutionLog(BaseModel):
@@ -169,7 +170,7 @@ class HistoryEntry(BaseModel):
     id: str
     scenario_name: str
     scenario_file: str
-    environment: Optional[str] = None
+    environment: str | None = None
     started_at: str
     duration_ms: int = 0
     total_steps: int = 0

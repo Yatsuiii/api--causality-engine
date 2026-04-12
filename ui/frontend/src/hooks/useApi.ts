@@ -8,6 +8,7 @@ import type {
   Scenario,
   Environment,
   HistoryEntry,
+  ValidationResult,
 } from "../types";
 
 const BASE = "/api";
@@ -126,12 +127,7 @@ export async function runScenario(
 
 export async function validateScenario(
   scenarioFile: string
-): Promise<{
-  valid: boolean;
-  stdout: string;
-  stderr: string;
-  exit_code: number;
-}> {
+): Promise<ValidationResult> {
   return request("/runner/validate", {
     method: "POST",
     body: JSON.stringify({ scenario_file: scenarioFile }),

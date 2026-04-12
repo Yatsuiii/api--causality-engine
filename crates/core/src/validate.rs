@@ -82,7 +82,8 @@ pub fn validate_scenario(scenario: &Scenario) -> Vec<String> {
 fn validate_linear(scenario: &Scenario) -> Vec<String> {
     let mut issues = Vec::new();
 
-    let first = scenario.steps[0].transition.as_ref().unwrap();
+    let first = scenario.steps[0].transition.as_ref()
+        .expect("validate_linear is only called after validate_scenario confirms all steps have transition set");
     if first.from != scenario.initial_state {
         issues.push(format!(
             "First step '{}' expects state '{}', but initial_state is '{}'",
@@ -91,8 +92,10 @@ fn validate_linear(scenario: &Scenario) -> Vec<String> {
     }
 
     for i in 1..scenario.steps.len() {
-        let prev_to = &scenario.steps[i - 1].transition.as_ref().unwrap().to;
-        let curr_from = &scenario.steps[i].transition.as_ref().unwrap().from;
+        let prev_to = &scenario.steps[i - 1].transition.as_ref()
+            .expect("validate_linear: all steps have transition set").to;
+        let curr_from = &scenario.steps[i].transition.as_ref()
+            .expect("validate_linear: all steps have transition set").from;
         if prev_to != curr_from {
             issues.push(format!(
                 "State gap: step '{}' transitions to '{}', but step '{}' expects '{}'",
@@ -142,7 +145,8 @@ fn validate_graph(scenario: &Scenario) -> Vec<String> {
         .unwrap_or_default();
 
     for step in &scenario.steps {
-        let edges = step.transitions.as_ref().unwrap();
+        let edges = step.transitions.as_ref()
+            .expect("validate_graph is only called after validate_scenario confirms all steps have transitions set");
 
         // Check each step has at least one edge
         if edges.is_empty() {

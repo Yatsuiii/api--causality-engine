@@ -83,7 +83,7 @@ export interface Hook {
 
 export interface Step {
   name: string;
-  method: string;
+  method: HttpMethod;
   url: string;
   transition?: Transition;
   transitions?: TransitionEdge[];
@@ -175,6 +175,15 @@ export interface HistoryEntry {
   passed: number;
   failed: number;
   log: ExecutionLog;
+}
+
+/* ── Validation Results ───────────────────────────────────────────── */
+
+export interface ValidationResult {
+  valid: boolean;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
 }
 
 /* ── API list item ───────────────────────────────────────────────── */

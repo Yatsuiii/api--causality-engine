@@ -39,8 +39,6 @@ pub async fn execute_step(
     let max_attempts = step.retry.as_ref().map_or(1, |r| r.attempts.max(1));
     let retry_delay = step.retry.as_ref().map_or(0, |r| r.delay_ms);
 
-    let mut last_result = None;
-
     for attempt in 1..=max_attempts {
         // Resolve URL and build request options
         let url = resolve_template(&step.url, context);
@@ -74,15 +72,12 @@ pub async fn execute_step(
             return Ok(result);
         }
 
-        last_result = Some(result);
-
         if retry_delay > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(retry_delay)).await;
         }
     }
 
-    // Unreachable in practice, but satisfies the compiler
-    Ok(last_result.unwrap())
+    unreachable!("loop exits via early return on the final attempt")
 }
 
 // ---------------------------------------------------------------------------
