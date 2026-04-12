@@ -1,14 +1,12 @@
-# ── Dependency cache stage ────────────────────────────────────────────────────
-FROM rust:1.87-slim AS chef
-RUN cargo install cargo-chef --locked
+# ── Planner stage ─────────────────────────────────────────────────────────────
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS planner
 WORKDIR /build
-
-FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# ── Build stage ───────────────────────────────────────────────────────────────
-FROM chef AS builder
+# ── Builder stage ─────────────────────────────────────────────────────────────
+FROM lukemathwalker/cargo-chef:latest-rust-1 AS builder
+WORKDIR /build
 COPY --from=planner /build/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
