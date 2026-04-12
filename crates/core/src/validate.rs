@@ -92,10 +92,16 @@ fn validate_linear(scenario: &Scenario) -> Vec<String> {
     }
 
     for i in 1..scenario.steps.len() {
-        let prev_to = &scenario.steps[i - 1].transition.as_ref()
-            .expect("validate_linear: all steps have transition set").to;
-        let curr_from = &scenario.steps[i].transition.as_ref()
-            .expect("validate_linear: all steps have transition set").from;
+        let prev_to = &scenario.steps[i - 1]
+            .transition
+            .as_ref()
+            .expect("validate_linear: all steps have transition set")
+            .to;
+        let curr_from = &scenario.steps[i]
+            .transition
+            .as_ref()
+            .expect("validate_linear: all steps have transition set")
+            .from;
         if prev_to != curr_from {
             issues.push(format!(
                 "State gap: step '{}' transitions to '{}', but step '{}' expects '{}'",
