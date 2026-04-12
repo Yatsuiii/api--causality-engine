@@ -1,13 +1,29 @@
 """Subprocess runner for ace CLI binary."""
 
-import subprocess
 import json
+import subprocess
 import tempfile
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from models import ExecutionLog, HistoryEntry
-from services.storage import save_history_entry, get_workspace_dir
+from uuid import uuid4
+
+import re
+
+import yaml
+
+from models import AssertionResult, ExecutionLog, HistoryEntry, StepLog
+from services.storage import get_environment, get_workspace_dir, save_history_entry
+
+
+def _read_scenario_name(scenario_path: str) -> str:
+    """Read the `name` field from a scenario YAML, falling back to the stem."""
+    try:
+        raw = yaml.safe_load(Path(scenario_path).read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("name"), str):
+            return raw["name"]
+    except Exception:
+        pass
+    return re.sub(r"[-_]+", " ", Path(scenario_path).stem).strip().title()
 
 
 def find_ace_binary() -> str:
@@ -31,11 +47,10 @@ def run_scenario(
     scenario_path: str,
     environment: str | None = None,
     variables: dict[str, str] | None = None,
-    verbose: bool = True,
 ) -> HistoryEntry:
     """Execute a scenario via the ace CLI and return results."""
     ace = find_ace_binary()
-    run_id = str(uuid.uuid4())[:8]
+    run_id = uuid4().hex[:8]
     output_fd = tempfile.NamedTemporaryFile(
         suffix=".json", prefix=f"ace_run_{run_id}_", delete=False,
     )
@@ -49,13 +64,10 @@ def run_scenario(
             cmd.extend(["--var", f"{k}={v}"])
 
     # Load environment variables if specified
-    env_vars = {}
     if environment:
-        from services.storage import get_environment
         env = get_environment(environment)
         if env:
-            env_vars = env.variables
-            for k, v in env_vars.items():
+            for k, v in env.variables.items():
                 cmd.extend(["--var", f"{k}={v}"])
 
     started_at = datetime.now(timezone.utc).isoformat()
@@ -83,6 +95,7 @@ def run_scenario(
     log = ExecutionLog()
     output_path = Path(output_file)
     if output_path.exists():
+        log_parse_error: str | None = None
         try:
             raw = json.loads(output_path.read_text(encoding="utf-8"))
             log = ExecutionLog(**raw)
@@ -90,8 +103,6 @@ def run_scenario(
             log_parse_error = f"Failed to parse output JSON: {e}"
         except Exception as e:
             log_parse_error = f"Failed to load execution log: {e}"
-        else:
-            log_parse_error = None
         finally:
             output_path.unlink(missing_ok=True)
 
@@ -108,7 +119,7 @@ def run_scenario(
             result.stderr or result.stdout or f"Exit code {result.returncode}"
         )
 
-    scenario_name = Path(scenario_path).stem.replace("_", " ")
+    scenario_name = _read_scenario_name(scenario_path)
     entry = HistoryEntry(
         id=run_id,
         scenario_name=scenario_name,
@@ -129,10 +140,9 @@ def _make_error_entry(
     run_id: str, scenario_path: str, environment: str | None,
     started_at: str, error: str,
 ) -> HistoryEntry:
-    from models import StepLog, AssertionResult
     entry = HistoryEntry(
         id=run_id,
-        scenario_name=Path(scenario_path).stem.replace("_", " "),
+        scenario_name=_read_scenario_name(scenario_path),
         scenario_file=scenario_path,
         environment=environment,
         started_at=started_at,

@@ -116,7 +116,10 @@ pub fn cmd_import(collection_path: &str, output_dir: &str) -> Result<(), CliErro
     let output_path = if output_dir == "." {
         filename.clone()
     } else {
-        std::fs::create_dir_all(output_dir).ok();
+        std::fs::create_dir_all(output_dir).map_err(|e| CliError::Io {
+            path: output_dir.to_string(),
+            source: e,
+        })?;
         format!("{}/{}", output_dir, filename)
     };
 

@@ -5,12 +5,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from routes.scenarios import router as scenarios_router
-from routes.runner import router as runner_router
 from routes.environments import router as env_router
 from routes.history import router as history_router
+from routes.runner import router as runner_router
+from routes.scenarios import router as scenarios_router
+from services.storage import get_workspace_dir, set_workspace_dir
 
-app = FastAPI(title="ACE Desktop Backend", version="0.1.0")
+app = FastAPI(title="ACE Desktop Backend", version="0.1.4")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,7 +33,6 @@ def health():
 
 @app.get("/api/workspace")
 def get_workspace():
-    from services.storage import get_workspace_dir
     return {"workspace": str(get_workspace_dir())}
 
 
@@ -42,7 +42,6 @@ class WorkspaceBody(BaseModel):
 
 @app.post("/api/workspace")
 def set_workspace(body: WorkspaceBody):
-    from services.storage import set_workspace_dir
     try:
         set_workspace_dir(body.path)
     except ValueError as e:

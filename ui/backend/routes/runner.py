@@ -1,20 +1,21 @@
 """Runner routes — execute and validate scenarios via ace CLI."""
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Optional
+import subprocess
 from pathlib import Path
 
-from services.executor import run_scenario, find_ace_binary
-from services.storage import scenarios_dir
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from services.executor import find_ace_binary, run_scenario
+from services.storage import get_workspace_dir, scenarios_dir
 
 router = APIRouter()
 
 
 class RunRequest(BaseModel):
     scenario_file: str
-    environment: Optional[str] = None
-    variables: Optional[dict[str, str]] = None
+    environment: str | None = None
+    variables: dict[str, str] | None = None
 
 
 class ValidateRequest(BaseModel):
@@ -44,9 +45,6 @@ def run(req: RunRequest):
 @router.post("/validate")
 def validate(req: ValidateRequest):
     """Validate a scenario YAML via ace CLI 'validate' subcommand."""
-    import subprocess
-    from services.storage import get_workspace_dir
-
     scenario_path = _resolve_scenario(req.scenario_file)
     if not Path(scenario_path).exists():
         raise HTTPException(404, f"Scenario file not found: {req.scenario_file}")
