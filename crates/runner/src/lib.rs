@@ -388,8 +388,9 @@ async fn execute_step(
 
     // Build request body
     let body = step.body.as_ref().map(|b| {
-        let json_str = serde_json::to_string(b)
-            .expect("step body is a serde_yaml::Value that parsed cleanly — serialization cannot fail");
+        let json_str = serde_json::to_string(b).expect(
+            "step body is a serde_yaml::Value that parsed cleanly — serialization cannot fail",
+        );
         resolve_template(&json_str, context)
     });
 
@@ -610,8 +611,9 @@ async fn run_linear_mode(
     let mut current_state = scenario.initial_state.clone();
 
     for step in &scenario.steps {
-        let transition = step.transition.as_ref()
-            .expect("run_linear_mode is only called after validate_scenario confirms linear layout");
+        let transition = step.transition.as_ref().expect(
+            "run_linear_mode is only called after validate_scenario confirms linear layout",
+        );
 
         // Validate state transition
         if transition.from != current_state {
@@ -755,8 +757,9 @@ async fn run_graph_mode(
         {
             Ok(result) => {
                 // Evaluate transitions to determine next state
-                let (_, edges) = step.resolved_edges()
-                    .expect("run_graph_mode is only called after validate_scenario confirms graph layout");
+                let (_, edges) = step.resolved_edges().expect(
+                    "run_graph_mode is only called after validate_scenario confirms graph layout",
+                );
                 let next_state = match evaluate_transitions(
                     &edges,
                     &result.response,
@@ -804,8 +807,9 @@ async fn run_graph_mode(
             }
             Err(RunError::Skipped { .. }) => {
                 // Skipped step: take default transition
-                let (_, edges) = step.resolved_edges()
-                    .expect("run_graph_mode is only called after validate_scenario confirms graph layout");
+                let (_, edges) = step.resolved_edges().expect(
+                    "run_graph_mode is only called after validate_scenario confirms graph layout",
+                );
                 let next_state = edges
                     .iter()
                     .find(|e| e.default.unwrap_or(false))
