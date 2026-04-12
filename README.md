@@ -19,6 +19,12 @@ The core idea: steps are states in a graph. You define where each step goes on s
 
 ## Install
 
+**Homebrew (macOS / Linux):**
+```bash
+brew tap yatsuiii/tap
+brew install ace
+```
+
 **One-liner (Linux / macOS):**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Yatsuiii/api--causality-engine/main/install.sh | sh
