@@ -71,13 +71,13 @@ pub fn read_file(path: &str) -> Result<String, CliError> {
 /// Read + parse a scenario YAML in one shot.
 pub fn load_scenario_file(path: &str) -> Result<model::Scenario, CliError> {
     let yaml = read_file(path)?;
-    model::load_scenario(&yaml).map_err(|e| CliError::YamlParse(e))
+    model::load_scenario(&yaml).map_err(CliError::YamlParse)
 }
 
 /// Read + parse an execution-log JSON in one shot.
 pub fn load_execution_log(path: &str) -> Result<Vec<runner::ExecutionLog>, CliError> {
     let json = read_file(path)?;
-    serde_json::from_str(&json).map_err(|e| CliError::JsonParse(e))
+    serde_json::from_str(&json).map_err(CliError::JsonParse)
 }
 
 /// Write bytes to a file, mapping the IO error.
