@@ -260,6 +260,40 @@ fn xml_escape(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Shared helper: reconstruct a Result from a saved ExecutionLog
+// ---------------------------------------------------------------------------
+
+/// Rebuild the `Result` side of a `(ExecutionLog, Result<…>)` pair from
+/// persisted data.  The raw `RunError` is not stored on disk — only the step
+/// logs and aggregate counters are.  We reconstruct a best-effort result:
+/// - `log.failed > 0` → `Err(AssertionFailed)` with the actual failures
+/// - otherwise          → `Ok(state_after)` of the last step
+pub fn result_from_log(log: &ExecutionLog) -> Result<String, RunError> {
+    let final_state = log
+        .steps
+        .last()
+        .map(|s| s.state_after.clone())
+        .unwrap_or_else(|| "unknown".into());
+
+    if log.failed > 0 {
+        let failures: Vec<_> = log
+            .steps
+            .iter()
+            .flat_map(|s| s.assertions.iter().filter(|a| !a.passed).cloned())
+            .collect();
+        let step = log
+            .steps
+            .iter()
+            .find(|s| s.assertions.iter().any(|a| !a.passed))
+            .map(|s| s.step_name.clone())
+            .unwrap_or_else(|| "unknown".into());
+        Err(RunError::AssertionFailed { step, failures })
+    } else {
+        Ok(final_state)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // `report` subcommand
 // ---------------------------------------------------------------------------
 
@@ -269,12 +303,8 @@ pub fn cmd_report(log_path: &str, format: &str, output: Option<String>) -> Resul
     let results: Vec<(ExecutionLog, Result<String, RunError>)> = logs
         .into_iter()
         .map(|log| {
-            let final_state = log
-                .steps
-                .last()
-                .map(|s| s.state_after.clone())
-                .unwrap_or_else(|| "unknown".into());
-            (log, Ok(final_state))
+            let result = result_from_log(&log);
+            (log, result)
         })
         .collect();
 
@@ -304,4 +334,131 @@ pub fn cmd_report(log_path: &str, format: &str, output: Option<String>) -> Resul
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ace_core::assertions::AssertionResult;
+    use runner::StepLog;
+
+    fn passed_log(state_after: &str) -> ExecutionLog {
+        ExecutionLog {
+            steps: vec![StepLog {
+                step_name: "step1".into(),
+                state_before: "start".into(),
+                state_after: state_after.into(),
+                method: "GET".into(),
+                url: "http://example.com".into(),
+                status: 200,
+                duration_ms: 50,
+                assertions: vec![AssertionResult {
+                    description: "status == 200".into(),
+                    passed: true,
+                    expected: "200".into(),
+                    actual: "200".into(),
+                }],
+                request_body: None,
+                response_body: None,
+            }],
+            total_duration_ms: 50,
+            total_steps: 1,
+            passed: 1,
+            failed: 0,
+            iterations: 1,
+            terminal_state: Some(state_after.into()),
+        }
+    }
+
+    fn failed_log() -> ExecutionLog {
+        ExecutionLog {
+            steps: vec![StepLog {
+                step_name: "step1".into(),
+                state_before: "start".into(),
+                state_after: "done".into(),
+                method: "GET".into(),
+                url: "http://example.com".into(),
+                status: 404,
+                duration_ms: 50,
+                assertions: vec![AssertionResult {
+                    description: "status == 200".into(),
+                    passed: false,
+                    expected: "200".into(),
+                    actual: "404".into(),
+                }],
+                request_body: None,
+                response_body: None,
+            }],
+            total_duration_ms: 50,
+            total_steps: 1,
+            passed: 0,
+            failed: 1,
+            iterations: 1,
+            terminal_state: None,
+        }
+    }
+
+    // Bug regression: replay/report of a failed run must not return Ok.
+    #[test]
+    fn result_from_log_failed_is_err() {
+        let log = failed_log();
+        let result = result_from_log(&log);
+        assert!(
+            result.is_err(),
+            "failed log (failed > 0) must reconstruct as Err, not Ok"
+        );
+        assert!(matches!(result, Err(RunError::AssertionFailed { .. })));
+    }
+
+    #[test]
+    fn result_from_log_passed_is_ok() {
+        let log = passed_log("done");
+        let result = result_from_log(&log);
+        assert_eq!(result.unwrap(), "done");
+    }
+
+    #[test]
+    fn result_from_log_empty_log_is_ok_unknown() {
+        let log = ExecutionLog {
+            steps: vec![],
+            total_duration_ms: 0,
+            total_steps: 0,
+            passed: 0,
+            failed: 0,
+            iterations: 0,
+            terminal_state: None,
+        };
+        assert_eq!(result_from_log(&log).unwrap(), "unknown");
+    }
+
+    #[test]
+    fn percentile_empty() {
+        assert_eq!(percentile(&[], 50), 0);
+    }
+
+    #[test]
+    fn percentile_single() {
+        assert_eq!(percentile(&[42], 50), 42);
+        assert_eq!(percentile(&[42], 99), 42);
+    }
+
+    #[test]
+    fn truncate_short_string() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_long_string() {
+        let result = truncate("abcdef", 3);
+        assert_eq!(result, "abc...");
+    }
+
+    #[test]
+    fn xml_escape_all_chars() {
+        assert_eq!(xml_escape("a&b<c>d\"e'f"), "a&amp;b&lt;c&gt;d&quot;e&apos;f");
+    }
 }
