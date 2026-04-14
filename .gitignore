@@ -18,7 +18,3 @@ __pycache__/
 .venv/
 env/
 venv/
-
-# Local tooling
-.claude/settings.local.json
-.codex
