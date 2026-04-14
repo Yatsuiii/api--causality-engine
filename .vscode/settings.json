@@ -1,0 +1,7 @@
+{
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.extraArgs": ["--", "-D", "warnings"],
+  "rust-analyzer.check.extraEnv": {
+    "RUSTFLAGS": "-D warnings"
+  }
+}
