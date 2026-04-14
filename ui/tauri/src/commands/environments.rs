@@ -8,9 +8,7 @@ use crate::storage::{self, Environment, WorkspaceState};
 
 #[tauri::command]
 #[specta::specta]
-pub fn list_environments(
-    state: State<'_, WorkspaceState>,
-) -> Result<Vec<Environment>, String> {
+pub fn list_environments(state: State<'_, WorkspaceState>) -> Result<Vec<Environment>, String> {
     storage::list_environments(&state)
 }
 
@@ -58,10 +56,7 @@ pub fn update_environment(
 
 #[tauri::command]
 #[specta::specta]
-pub fn delete_environment(
-    state: State<'_, WorkspaceState>,
-    name: String,
-) -> Result<(), String> {
+pub fn delete_environment(state: State<'_, WorkspaceState>, name: String) -> Result<(), String> {
     if !storage::delete_environment(&state, &name)? {
         return Err(format!("Environment '{}' not found", name));
     }

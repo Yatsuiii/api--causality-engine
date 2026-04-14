@@ -25,10 +25,7 @@ pub fn get_history_entry(
 
 #[tauri::command]
 #[specta::specta]
-pub fn delete_history_entry(
-    state: State<'_, WorkspaceState>,
-    id: String,
-) -> Result<(), String> {
+pub fn delete_history_entry(state: State<'_, WorkspaceState>, id: String) -> Result<(), String> {
     if !storage::delete_history_entry(&state, &id)? {
         return Err(format!("History entry '{}' not found", id));
     }

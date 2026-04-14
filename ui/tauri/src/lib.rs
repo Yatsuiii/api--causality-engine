@@ -3,7 +3,7 @@ pub mod storage;
 
 use storage::WorkspaceState;
 use tauri::Manager;
-use tauri_specta::{collect_commands, Builder};
+use tauri_specta::{Builder, collect_commands};
 use tracing_subscriber::EnvFilter;
 
 pub fn run() {
