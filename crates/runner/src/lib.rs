@@ -352,6 +352,9 @@ struct StepResult {
     assertion_results: Vec<AssertionResult>,
     all_passed: bool,
     body_sent: Option<String>,
+    /// URL as it was resolved *before* this step's own extractions ran, so the
+    /// log reflects what was actually sent rather than a post-extraction value.
+    url_sent: String,
 }
 
 async fn execute_step(
@@ -491,6 +494,7 @@ async fn execute_step(
                         assertion_results,
                         all_passed,
                         body_sent: body.clone(),
+                        url_sent: url.clone(),
                     });
                 } else {
                     warn!(
@@ -613,9 +617,20 @@ async fn run_linear_mode(
     let mut current_state = scenario.initial_state.clone();
 
     for step in &scenario.steps {
-        let transition = step.transition.as_ref().expect(
-            "run_linear_mode is only called after validate_scenario confirms linear layout",
-        );
+        let transition = match step.transition.as_ref() {
+            Some(t) => t,
+            None => {
+                log.total_duration_ms = run_start.elapsed().as_millis() as u64;
+                return (
+                    std::mem::take(log),
+                    Err(RunError::InvalidTransition {
+                        step: step.name.clone(),
+                        expected: current_state.clone(),
+                        actual: "<missing transition>".into(),
+                    }),
+                );
+            }
+        };
 
         // Validate state transition
         if transition.from != current_state {
@@ -646,7 +661,7 @@ async fn run_linear_mode(
                     state_before: transition.from.clone(),
                     state_after: transition.to.clone(),
                     method: step.method.as_str().to_string(),
-                    url: resolve_template(&step.url, context),
+                    url: result.url_sent.clone(),
                     status: result.response.status,
                     duration_ms: result.response.duration_ms,
                     assertions: result.assertion_results.clone(),
@@ -781,7 +796,7 @@ async fn run_graph_mode(
                     state_before,
                     state_after: next_state.clone(),
                     method: step.method.as_str().to_string(),
-                    url: resolve_template(&step.url, context),
+                    url: result.url_sent.clone(),
                     status: result.response.status,
                     duration_ms: result.response.duration_ms,
                     assertions: result.assertion_results.clone(),
@@ -877,10 +892,21 @@ fn extract_context(
     task_id: usize,
     step_name: &str,
 ) -> Result<(), RunError> {
-    let json: serde_json::Value = serde_json::from_str(body).map_err(|e| RunError::HttpError {
-        step: step_name.to_string(),
-        message: format!("Failed to parse JSON for extraction: {}", e),
-    })?;
+    // A non-JSON body is not a fatal error — warn and skip all extractions so
+    // downstream steps still run.  Turning a successful HTTP response into a
+    // RunError::HttpError just because the body wasn't parseable is misleading.
+    let json: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                task_id,
+                step = step_name,
+                error = %e,
+                "Response body is not valid JSON; skipping all extract: paths"
+            );
+            return Ok(());
+        }
+    };
 
     for (context_key, json_path) in extract {
         if let Some(value) = jsonpath::extract_string(&json, json_path) {
@@ -1264,6 +1290,92 @@ steps:
         assert_eq!(
             evaluate_transitions(&edges, &response, &failed, "current").unwrap(),
             "fail_state"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Runner bug regressions
+    // -----------------------------------------------------------------------
+
+    // Bug 1 regression: extract_context must not return a RunError when the
+    // response body is not JSON.  Before the fix it mapped the parse error to
+    // RunError::HttpError, turning a successful HTTP call into a reported
+    // failure.
+    #[test]
+    fn extract_context_non_json_body_is_warning_not_error() {
+        let mut context = HashMap::new();
+        let mut extract = HashMap::new();
+        extract.insert("token".to_string(), "token".to_string());
+
+        // Plain-text body — not valid JSON
+        let result = extract_context(&extract, "OK", &mut context, 0, "step1");
+        assert!(
+            result.is_ok(),
+            "non-JSON body must not produce an error; got {:?}",
+            result
+        );
+        // Nothing should have been extracted
+        assert!(context.get("token").is_none());
+    }
+
+    // Bug 1 continuation: well-formed JSON still extracts correctly.
+    #[test]
+    fn extract_context_valid_json_still_works() {
+        let mut context = HashMap::new();
+        let mut extract = HashMap::new();
+        extract.insert("tok".to_string(), "token".to_string());
+
+        let result = extract_context(
+            &extract,
+            r#"{"token": "abc123"}"#,
+            &mut context,
+            0,
+            "step1",
+        );
+        assert!(result.is_ok());
+        assert_eq!(context.get("tok").map(|s| s.as_str()), Some("abc123"));
+    }
+
+    // Bug 3 regression: a step missing transition: in linear mode must return
+    // RunError::InvalidTransition instead of panicking.
+    #[tokio::test]
+    async fn missing_transition_returns_error_not_panic() {
+        let scenario = Scenario {
+            name: "test".into(),
+            initial_state: "start".into(),
+            concurrency: None,
+            auth: None,
+            variables: None,
+            proxy: None,
+            insecure: None,
+            default_timeout_ms: None,
+            max_iterations: None,
+            terminal_states: None,
+            steps: vec![Step {
+                name: "no_transition".into(),
+                method: Method::Get,
+                url: "http://example.com".into(),
+                transition: None, // deliberately missing
+                transitions: None,
+                state: None,
+                headers: None,
+                body: None,
+                multipart: None,
+                extract: None,
+                retry: None,
+                assertions: None,
+                timeout_ms: None,
+                pre_request: None,
+                post_request: None,
+                tags: None,
+            }],
+        };
+
+        let results = run(&scenario, &default_config()).await;
+        assert!(
+            matches!(&results[0].1, Err(RunError::InvalidTransition { .. })),
+            "expected InvalidTransition, got {:?}",
+            results[0].1
         );
     }
 }
