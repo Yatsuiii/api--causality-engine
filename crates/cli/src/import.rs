@@ -240,7 +240,11 @@ fn parse_request(item: &Value, folder: Option<&str>) -> Option<ImportedRequest> 
                 match raw {
                     Some(ref s) => {
                         let (yaml, coerced) = body_to_yaml(s);
-                        let fallback = if yaml.is_none() { Some(s.clone()) } else { None };
+                        let fallback = if yaml.is_none() {
+                            Some(s.clone())
+                        } else {
+                            None
+                        };
                         (yaml, coerced, fallback, None, vec![])
                     }
                     None => (None, false, None, None, vec![]),
@@ -253,9 +257,7 @@ fn parse_request(item: &Value, folder: Option<&str>) -> Option<ImportedRequest> 
                     .map(|arr| {
                         arr.iter()
                             .filter(|f| {
-                                !f.get("disabled")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false)
+                                !f.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false)
                             })
                             .filter_map(|f| {
                                 let k = f.get("key")?.as_str()?.to_string();
@@ -288,9 +290,7 @@ fn parse_request(item: &Value, folder: Option<&str>) -> Option<ImportedRequest> 
                     .map(|arr| {
                         arr.iter()
                             .filter(|f| {
-                                !f.get("disabled")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false)
+                                !f.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false)
                             })
                             .filter_map(|f| {
                                 let name = f.get("key")?.as_str()?.to_string();
@@ -951,10 +951,7 @@ fn build_yaml(name: &str, vars: &[(String, String)], requests: &[ImportedRequest
             for (name, value, file) in &req.multipart_fields {
                 yaml.push_str(&format!("      - name: {}\n", name));
                 if let Some(v) = value {
-                    yaml.push_str(&format!(
-                        "        value: \"{}\"\n",
-                        v.replace('"', "\\\"")
-                    ));
+                    yaml.push_str(&format!("        value: \"{}\"\n", v.replace('"', "\\\"")));
                 }
                 if let Some(f) = file {
                     yaml.push_str(&format!("        file: {}\n", f));
@@ -1262,7 +1259,10 @@ mod tests {
     fn test_script_body_field_type() {
         let src = "pm.expect(json.title).to.be.a('string');";
         let info = parse_test_script(&lines(src));
-        assert_eq!(info.body_field_types, vec![("title".into(), "string".into())]);
+        assert_eq!(
+            info.body_field_types,
+            vec![("title".into(), "string".into())]
+        );
     }
 
     #[test]
@@ -1324,7 +1324,10 @@ mod tests {
     fn pre_script_literal_set_translated() {
         let src = "pm.variables.set('grant_type', 'client_credentials');";
         let (sets, warns) = parse_pre_script(&lines(src));
-        assert_eq!(sets, vec![("grant_type".into(), "client_credentials".into())]);
+        assert_eq!(
+            sets,
+            vec![("grant_type".into(), "client_credentials".into())]
+        );
         assert!(warns.is_empty());
     }
 
@@ -1338,7 +1341,8 @@ mod tests {
 
     #[test]
     fn pre_script_guard_block_skipped() {
-        let src = "var token = pm.environment.get('token');\nif (!token) { throw new Error('missing'); }";
+        let src =
+            "var token = pm.environment.get('token');\nif (!token) { throw new Error('missing'); }";
         let (sets, warns) = parse_pre_script(&lines(src));
         assert!(sets.is_empty());
         assert!(warns.is_empty());
@@ -1349,8 +1353,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn snap(collection_json: &str, expected_yaml: &str) {
-        let actual = collection_json_to_yaml(collection_json)
-            .expect("collection_json_to_yaml failed");
+        let actual =
+            collection_json_to_yaml(collection_json).expect("collection_json_to_yaml failed");
         assert_eq!(
             actual, expected_yaml,
             "\n\nSnapshot mismatch — if the output change is intentional, \
