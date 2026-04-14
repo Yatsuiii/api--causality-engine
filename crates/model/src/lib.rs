@@ -109,6 +109,9 @@ pub struct Step {
     pub pre_request: Option<Vec<Hook>>,
     #[serde(default)]
     pub post_request: Option<Vec<Hook>>,
+    /// Organisational tags (e.g. Postman folder names preserved on import).
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 impl Step {
@@ -310,6 +313,9 @@ pub struct Assertion {
     pub status: Option<StatusCheck>,
     #[serde(default)]
     pub body: Option<HashMap<String, ValueCheck>>,
+    /// Assert the JSON type of the entire response body: "array", "object", "string", etc.
+    #[serde(default)]
+    pub body_type: Option<String>,
     #[serde(default)]
     pub header: Option<HashMap<String, ValueCheck>>,
     #[serde(default)]
@@ -340,6 +346,9 @@ pub struct ValueCheck {
     pub gt: Option<f64>,
     #[serde(default, rename = "in")]
     pub in_list: Option<Vec<serde_json::Value>>,
+    /// JSON type name: "array", "object", "string", "number", "boolean", "null".
+    #[serde(default, rename = "type")]
+    pub type_of: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
