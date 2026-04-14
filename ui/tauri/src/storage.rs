@@ -38,14 +38,12 @@ fn workspace_config_path(app: &AppHandle) -> PathBuf {
 /// Load the persisted workspace dir from disk, falling back to cwd.
 pub fn load_workspace(app: &AppHandle) -> PathBuf {
     let p = workspace_config_path(app);
-    if p.exists() {
-        if let Ok(text) = fs::read_to_string(&p) {
-            if let Ok(cfg) = serde_json::from_str::<WorkspaceConfig>(&text) {
-                if cfg.path.is_dir() {
-                    return cfg.path;
-                }
-            }
-        }
+    if p.exists()
+        && let Ok(text) = fs::read_to_string(&p)
+        && let Ok(cfg) = serde_json::from_str::<WorkspaceConfig>(&text)
+        && cfg.path.is_dir()
+    {
+        return cfg.path;
     }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
@@ -159,17 +157,13 @@ pub fn list_scenario_files(state: &WorkspaceState) -> Vec<PathBuf> {
 }
 
 /// Atomic duplicate-naming retry loop (mirrors routes/scenarios.py lines 209–225).
-pub fn duplicate_scenario_file(
-    state: &WorkspaceState,
-    name: &str,
-) -> Result<PathBuf, String> {
+pub fn duplicate_scenario_file(state: &WorkspaceState, name: &str) -> Result<PathBuf, String> {
     let src = scenario_path(state, name)?;
     if !src.exists() {
         return Err(format!("Scenario '{}' not found", name));
     }
     let content = fs::read_to_string(&src).map_err(|e| e.to_string())?;
-    let mut raw: serde_json::Value =
-        serde_yaml::from_str(&content).map_err(|e| e.to_string())?;
+    let mut raw: serde_json::Value = serde_yaml::from_str(&content).map_err(|e| e.to_string())?;
 
     let base = src
         .file_stem()
@@ -186,8 +180,7 @@ pub fn duplicate_scenario_file(
     for i in 1..=100_u32 {
         let new_path = d.join(format!("{base}_copy{i}.yaml"));
         if raw.is_object() {
-            raw["name"] =
-                serde_json::Value::String(format!("{original_name} (copy {i})"));
+            raw["name"] = serde_json::Value::String(format!("{original_name} (copy {i})"));
         }
         let new_content = serde_yaml::to_string(&raw).map_err(|e| e.to_string())?;
         match fs::OpenOptions::new()
@@ -234,10 +227,7 @@ pub fn list_environments(state: &WorkspaceState) -> Result<Vec<Environment>, Str
     Ok(envs)
 }
 
-pub fn get_environment(
-    state: &WorkspaceState,
-    name: &str,
-) -> Result<Option<Environment>, String> {
+pub fn get_environment(state: &WorkspaceState, name: &str) -> Result<Option<Environment>, String> {
     let f = environments_dir(state).join(format!("{name}.json"));
     if !f.exists() {
         return Ok(None);
@@ -308,10 +298,7 @@ pub fn list_history(state: &WorkspaceState, limit: usize) -> Result<Vec<HistoryE
         .collect())
 }
 
-pub fn get_history_entry(
-    state: &WorkspaceState,
-    id: &str,
-) -> Result<Option<HistoryEntry>, String> {
+pub fn get_history_entry(state: &WorkspaceState, id: &str) -> Result<Option<HistoryEntry>, String> {
     let f = history_dir(state).join(format!("{id}.json"));
     if !f.exists() {
         return Ok(None);
@@ -395,9 +382,12 @@ mod tests {
 
         let env = Environment {
             name: "staging".to_string(),
-            variables: [("BASE_URL".to_string(), "https://api.example.com".to_string())]
-                .into_iter()
-                .collect(),
+            variables: [(
+                "BASE_URL".to_string(),
+                "https://api.example.com".to_string(),
+            )]
+            .into_iter()
+            .collect(),
         };
 
         save_environment(&state, &env).unwrap();
@@ -461,8 +451,11 @@ mod tests {
         assert_eq!(first.file_name().unwrap(), "hello_copy1.yaml");
 
         // Pre-create copy2 to force the loop forward.
-        fs::write(examples.join("hello_copy2.yaml"), "name: taken\ninitial_state: start\nsteps: []\n")
-            .unwrap();
+        fs::write(
+            examples.join("hello_copy2.yaml"),
+            "name: taken\ninitial_state: start\nsteps: []\n",
+        )
+        .unwrap();
         let third = duplicate_scenario_file(&state, "hello").unwrap();
         assert_eq!(third.file_name().unwrap(), "hello_copy3.yaml");
     }
