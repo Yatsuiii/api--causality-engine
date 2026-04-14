@@ -21,12 +21,8 @@ pub fn cmd_replay(path: &str) -> Result<(), CliError> {
     let results: Vec<(ExecutionLog, Result<String, RunError>)> = logs
         .into_iter()
         .map(|log| {
-            let final_state = log
-                .steps
-                .last()
-                .map(|s| s.state_after.clone())
-                .unwrap_or_else(|| "unknown".into());
-            (log, Ok(final_state))
+            let result = report::result_from_log(&log);
+            (log, result)
         })
         .collect();
 
