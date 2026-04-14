@@ -1,4 +1,31 @@
-/* ── Auth ─────────────────────────────────────────────────────────── */
+// Types derived from Rust structs — sourced from the generated bindings.
+// Re-exported here so existing imports from "../types" continue to work.
+export type {
+  AssertionResult,
+  DuplicatedScenario,
+  Environment,
+  ExecutionLog,
+  HistoryEntry,
+  RawScenario,
+  ScenarioFile,
+  StepLog,
+} from "./bindings";
+
+// ScenarioSummary is the Rust name; export it under the legacy TS name too.
+export type { ScenarioSummary, ScenarioSummary as ScenarioListItem } from "./bindings";
+
+/* ── Validation Results ───────────────────────────────────────────── */
+
+// Kept in its original shape so App.tsx can display stdout/stderr output.
+// useApi.ts maps the Tauri command's `errors: string[]` into these fields.
+export interface ValidationResult {
+  valid: boolean;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+}
+
+/* ── Auth ─────────────────────────────────────────────────────────────── */
 
 export interface BasicAuth {
   username: string;
@@ -25,7 +52,7 @@ export interface Auth {
   oauth2?: OAuth2Config;
 }
 
-/* ── Step ─────────────────────────────────────────────────────────── */
+/* ── Step ─────────────────────────────────────────────────────────────── */
 
 export interface Transition {
   from: string;
@@ -99,7 +126,7 @@ export interface Step {
   post_request?: Hook[];
 }
 
-/* ── Scenario ────────────────────────────────────────────────────── */
+/* ── Scenario ────────────────────────────────────────────────────────── */
 
 export interface Scenario {
   name: string;
@@ -123,78 +150,6 @@ export function isScenario(value: unknown): value is Scenario {
     typeof obj.initial_state === "string" &&
     Array.isArray(obj.steps)
   );
-}
-
-/* ── Execution Results ───────────────────────────────────────────── */
-
-export interface AssertionResult {
-  description: string;
-  passed: boolean;
-  expected?: string;
-  actual?: string;
-}
-
-export interface StepLog {
-  step_name: string;
-  state_before: string;
-  state_after: string;
-  method: string;
-  url: string;
-  status: number;
-  duration_ms: number;
-  assertions: AssertionResult[];
-  request_body?: string;
-  response_body?: string;
-}
-
-export interface ExecutionLog {
-  steps: StepLog[];
-  total_duration_ms: number;
-  total_steps: number;
-  passed: number;
-  failed: number;
-}
-
-/* ── Environment ─────────────────────────────────────────────────── */
-
-export interface Environment {
-  name: string;
-  variables: Record<string, string>;
-}
-
-/* ── History ──────────────────────────────────────────────────────── */
-
-export interface HistoryEntry {
-  id: string;
-  scenario_name: string;
-  scenario_file: string;
-  environment?: string;
-  started_at: string;
-  duration_ms: number;
-  total_steps: number;
-  passed: number;
-  failed: number;
-  log: ExecutionLog;
-}
-
-/* ── Validation Results ───────────────────────────────────────────── */
-
-export interface ValidationResult {
-  valid: boolean;
-  stdout: string;
-  stderr: string;
-  exit_code: number;
-}
-
-/* ── API list item ───────────────────────────────────────────────── */
-
-export interface ScenarioListItem {
-  file: string;
-  name: string;
-  steps: number;
-  initial_state: string;
-  concurrency?: number;
-  error?: string;
 }
 
 export type HttpMethod =

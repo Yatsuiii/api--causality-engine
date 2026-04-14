@@ -91,6 +91,7 @@ impl std::error::Error for RunError {}
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ExecutionLog {
     pub steps: Vec<StepLog>,
     pub total_duration_ms: u64,
@@ -104,6 +105,7 @@ pub struct ExecutionLog {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct StepLog {
     pub step_name: String,
     pub state_before: String,

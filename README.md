@@ -269,22 +269,21 @@ It won't handle every Postman feature, but it gets you a starting point instead 
 
 ## Desktop UI
 
-There's also a local web UI if you'd rather not deal with YAML directly. It's a React frontend with a Python sidecar (FastAPI) that wraps the `ace` binary.
+There's also a native desktop app if you'd rather not deal with YAML directly. It's a React + Tauri application that calls the ACE engine in-process — no server, no Python, no extra runtime to install.
 
-To run it:
+**Install:** grab the platform bundle from the [releases page](https://github.com/Yatsuiii/api--causality-engine/releases/latest) (`.dmg` for macOS, `.msi` for Windows, `.deb`/`.AppImage` for Linux).
+
+**Dev mode (requires Rust + Node):**
 
 ```bash
-cd ui/backend
-pip install -r requirements.txt
-uvicorn main:app --port 8787
-
-# in another terminal
 cd ui/frontend
 npm install
-npm run dev
+
+# in the project root
+cargo tauri dev
 ```
 
-Open `http://localhost:5173`. You can create and edit scenarios visually, run them, browse history, and manage environments — all stored locally.
+You can create and edit scenarios visually, run them, browse history, and manage environments — all stored locally.
 
 ## Examples
 

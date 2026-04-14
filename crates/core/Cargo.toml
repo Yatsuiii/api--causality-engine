@@ -6,7 +6,11 @@ authors = ["Yatsuiii"]
 license = "MIT"
 repository = "https://github.com/Yatsuiii/api--causality-engine"
 
+[features]
+specta = ["dep:specta"]
+
 [dependencies]
+specta = { version = "=2.0.0-rc.22", features = ["derive"], optional = true }
 model = { path = "../model" }
 ace-http = { path = "../http" }
 serde = { version = "1", features = ["derive"] }
