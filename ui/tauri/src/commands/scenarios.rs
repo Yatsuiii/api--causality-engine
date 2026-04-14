@@ -134,7 +134,11 @@ pub fn get_scenario(
     let text = fs::read_to_string(&p).map_err(|e| e.to_string())?;
     let scenario: Value =
         serde_yaml::from_str(&text).map_err(|e| format!("Failed to parse YAML: {}", e))?;
-    let file = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let file = p
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     Ok(ScenarioFile { file, scenario })
 }
 
@@ -149,7 +153,11 @@ pub fn get_scenario_raw(
         return Err(format!("Scenario '{}' not found", name));
     }
     let content = fs::read_to_string(&p).map_err(|e| e.to_string())?;
-    let file = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let file = p
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     Ok(RawScenario { file, content })
 }
 
@@ -163,10 +171,12 @@ pub fn update_scenario_raw(
 ) -> Result<String, String> {
     let p = storage::scenario_path(&state, &name)?;
     // Reject malformed YAML before clobbering the file.
-    serde_yaml::from_str::<Value>(&content)
-        .map_err(|e| format!("Invalid YAML: {}", e))?;
+    serde_yaml::from_str::<Value>(&content).map_err(|e| format!("Invalid YAML: {}", e))?;
     fs::write(&p, content.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+    Ok(p.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned())
 }
 
 #[tauri::command]
@@ -201,10 +211,7 @@ pub fn create_scenario(
         );
     }
     if !data.contains_key("steps") {
-        data.insert(
-            "steps".into(),
-            steps.unwrap_or(Value::Array(vec![])),
-        );
+        data.insert("steps".into(), steps.unwrap_or(Value::Array(vec![])));
     }
 
     validate_scenario_value(&Value::Object(data.clone()))?;
@@ -241,20 +248,24 @@ pub fn update_scenario(
     validate_scenario_value(&scenario)?;
     let yaml = serde_yaml::to_string(&scenario).map_err(|e| e.to_string())?;
     fs::write(&p, yaml.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+    Ok(p.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned())
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn delete_scenario(
-    state: State<'_, WorkspaceState>,
-    name: String,
-) -> Result<String, String> {
+pub fn delete_scenario(state: State<'_, WorkspaceState>, name: String) -> Result<String, String> {
     let p = storage::scenario_path(&state, &name)?;
     if !p.exists() {
         return Err(format!("Scenario '{}' not found", name));
     }
-    let file = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let file = p
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     fs::remove_file(&p).map_err(|e| e.to_string())?;
     Ok(file)
 }
@@ -269,9 +280,17 @@ pub fn duplicate_scenario(
     if !src.exists() {
         return Err(format!("Scenario '{}' not found", name));
     }
-    let original = src.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let original = src
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     let dest = storage::duplicate_scenario_file(&state, &name)?;
-    let file = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let file = dest
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     Ok(DuplicatedScenario {
         file,
         original,
