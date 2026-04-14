@@ -50,8 +50,14 @@ pub fn validate_scenario(scenario: &Scenario) -> Vec<String> {
     // Common checks
     let mut seen_names = HashSet::new();
     for step in &scenario.steps {
+        if step.name.trim().is_empty() {
+            issues.push("Step with empty name found — all steps must have a non-empty name".into());
+        }
         if !seen_names.insert(&step.name) {
             issues.push(format!("Duplicate step name: '{}'", step.name));
+        }
+        if step.url.trim().is_empty() {
+            issues.push(format!("Step '{}': url is empty", step.name));
         }
     }
 
@@ -76,6 +82,60 @@ pub fn validate_scenario(scenario: &Scenario) -> Vec<String> {
     }
 
     issues
+}
+
+// ---------------------------------------------------------------------------
+// Template variable helpers
+// ---------------------------------------------------------------------------
+
+/// Extract all `{{key}}` references from a string.
+fn template_refs(s: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    let mut remaining = s;
+    while let Some(start) = remaining.find("{{") {
+        if let Some(end) = remaining[start + 2..].find("}}") {
+            let key = remaining[start + 2..start + 2 + end].trim().to_string();
+            refs.push(key);
+            remaining = &remaining[start + 2 + end + 2..];
+        } else {
+            break;
+        }
+    }
+    refs
+}
+
+/// Returns true for built-in dynamic variables that are always available.
+fn is_builtin(key: &str) -> bool {
+    matches!(key, "$uuid" | "$guid" | "$timestamp" | "$randomInt")
+        || key.starts_with("$env.")
+}
+
+/// Collect all template references from a step's URL, headers, and body.
+fn step_var_refs(step: &model::Step) -> Vec<String> {
+    let mut refs = Vec::new();
+    refs.extend(template_refs(&step.url));
+    if let Some(headers) = &step.headers {
+        for v in headers.values() {
+            refs.extend(template_refs(v));
+        }
+    }
+    if let Some(body) = &step.body {
+        // Serialize to string so we can scan for {{...}} regardless of type
+        if let Ok(s) = serde_json::to_string(body) {
+            refs.extend(template_refs(&s));
+        }
+    }
+    // pre_request set: values may also reference variables
+    if let Some(hooks) = &step.pre_request {
+        for hook in hooks {
+            if let Some(sets) = &hook.set {
+                for v in sets.values() {
+                    refs.extend(template_refs(v));
+                }
+            }
+        }
+    }
+    refs
 }
 
 /// Linear-mode validation: sequential state continuity.
@@ -110,6 +170,46 @@ fn validate_linear(scenario: &Scenario) -> Vec<String> {
                 scenario.steps[i].name,
                 curr_from,
             ));
+        }
+    }
+
+    // Undefined variable check: track what's available at each step and warn
+    // about references that will silently resolve to empty string at runtime.
+    // Variables become available from: scenario variables block, pre_request
+    // set hooks on the current step, and extract: fields of all prior steps.
+    let mut available: HashSet<String> = scenario
+        .variables
+        .as_ref()
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+
+    for step in &scenario.steps {
+        // pre_request sets are applied before the request fires, so their keys
+        // are available within this step's own URL/headers/body.
+        if let Some(hooks) = &step.pre_request {
+            for hook in hooks {
+                if let Some(sets) = &hook.set {
+                    for k in sets.keys() {
+                        available.insert(k.clone());
+                    }
+                }
+            }
+        }
+
+        for var in step_var_refs(step) {
+            if !is_builtin(&var) && !available.contains(&var) {
+                issues.push(format!(
+                    "Step '{}': variable '{{{{{}}}}}' is used but never declared or extracted",
+                    step.name, var
+                ));
+            }
+        }
+
+        // After this step runs, its extract: fields become available downstream.
+        if let Some(extract) = &step.extract {
+            for k in extract.keys() {
+                available.insert(k.clone());
+            }
         }
     }
 
@@ -521,5 +621,214 @@ steps:
         let scenario = load_scenario(yaml).unwrap();
         let issues = validate_scenario(&scenario);
         assert!(issues.iter().any(|i| i.contains("loop forever")));
+    }
+
+    // -----------------------------------------------------------------------
+    // Empty URL and name checks
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn detects_empty_url() {
+        let yaml = r#"
+name: empty url
+initial_state: start
+steps:
+  - name: step1
+    method: GET
+    url: ""
+    transition:
+      from: start
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let issues = validate_scenario(&scenario);
+        assert!(issues.iter().any(|i| i.contains("url is empty")));
+    }
+
+    #[test]
+    fn detects_empty_step_name() {
+        let yaml = r#"
+name: empty name
+initial_state: start
+steps:
+  - name: ""
+    method: GET
+    url: "http://example.com"
+    transition:
+      from: start
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let issues = validate_scenario(&scenario);
+        assert!(issues.iter().any(|i| i.contains("empty name")));
+    }
+
+    // -----------------------------------------------------------------------
+    // Undefined variable checks
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn passes_when_var_declared_in_variables_block() {
+        let yaml = r#"
+name: declared
+initial_state: start
+variables:
+  base_url: https://api.example.com
+steps:
+  - name: step1
+    method: GET
+    url: "{{base_url}}/users"
+    transition:
+      from: start
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let issues = validate_scenario(&scenario);
+        assert!(issues.is_empty(), "Expected no issues, got: {:?}", issues);
+    }
+
+    #[test]
+    fn passes_when_var_extracted_by_prior_step() {
+        let yaml = r#"
+name: extracted
+initial_state: start
+steps:
+  - name: login
+    method: POST
+    url: "http://example.com/login"
+    extract:
+      token: id
+    transition:
+      from: start
+      to: profile
+  - name: profile
+    method: GET
+    url: "http://example.com/me"
+    headers:
+      Authorization: "Bearer {{token}}"
+    transition:
+      from: profile
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let issues = validate_scenario(&scenario);
+        assert!(issues.is_empty(), "Expected no issues, got: {:?}", issues);
+    }
+
+    #[test]
+    fn detects_undefined_variable_in_url() {
+        let yaml = r#"
+name: undefined var
+initial_state: start
+steps:
+  - name: step1
+    method: GET
+    url: "http://example.com/users/{{user_id}}"
+    transition:
+      from: start
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let issues = validate_scenario(&scenario);
+        assert!(
+            issues.iter().any(|i| i.contains("user_id")),
+            "Expected undefined variable warning, got: {:?}",
+            issues
+        );
+    }
+
+    #[test]
+    fn detects_undefined_variable_in_header() {
+        let yaml = r#"
+name: undefined header var
+initial_state: start
+steps:
+  - name: step1
+    method: GET
+    url: "http://example.com/data"
+    headers:
+      Authorization: "Bearer {{token}}"
+    transition:
+      from: start
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let issues = validate_scenario(&scenario);
+        assert!(issues.iter().any(|i| i.contains("token")));
+    }
+
+    #[test]
+    fn does_not_flag_builtins() {
+        let yaml = r#"
+name: builtins
+initial_state: start
+steps:
+  - name: step1
+    method: POST
+    url: "http://example.com/events"
+    headers:
+      X-Request-ID: "{{$uuid}}"
+      X-Time: "{{$timestamp}}"
+    transition:
+      from: start
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let issues = validate_scenario(&scenario);
+        assert!(issues.is_empty(), "Expected no issues, got: {:?}", issues);
+    }
+
+    #[test]
+    fn does_not_flag_env_vars() {
+        let yaml = r#"
+name: env vars
+initial_state: start
+steps:
+  - name: step1
+    method: GET
+    url: "{{$env.BASE_URL}}/health"
+    headers:
+      Authorization: "Bearer {{$env.API_TOKEN}}"
+    transition:
+      from: start
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let issues = validate_scenario(&scenario);
+        assert!(issues.is_empty(), "Expected no issues, got: {:?}", issues);
+    }
+
+    /// Regression: variable extracted on step N must not be flagged when used on step N+1,
+    /// but a variable never extracted or declared must still be caught.
+    #[test]
+    fn catches_undefined_but_not_extracted() {
+        let yaml = r#"
+name: mixed
+initial_state: start
+variables:
+  base_url: https://api.example.com
+steps:
+  - name: login
+    method: POST
+    url: "{{base_url}}/login"
+    extract:
+      token: id
+    transition:
+      from: start
+      to: profile
+  - name: profile
+    method: GET
+    url: "{{base_url}}/users/{{user_id}}"
+    headers:
+      Authorization: "Bearer {{token}}"
+    transition:
+      from: profile
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let issues = validate_scenario(&scenario);
+        // token and base_url are fine; user_id is never defined
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("user_id"));
     }
 }
