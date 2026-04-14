@@ -37,6 +37,11 @@ pub fn evaluate(assertions: &[Assertion], response: &HttpResponse) -> Vec<Assert
             }
         }
 
+        if let Some(expected_type) = &assertion.body_type {
+            let json: Option<serde_json::Value> = serde_json::from_str(&response.body).ok();
+            results.push(eval_body_type(expected_type, json.as_ref()));
+        }
+
         if let Some(header_checks) = &assertion.header {
             for (header_name, check) in header_checks {
                 results.push(eval_header(header_name, check, &response.headers));
@@ -73,6 +78,27 @@ fn eval_status(check: &StatusCheck, actual: u16) -> AssertionResult {
                 actual: actual.to_string(),
             }
         }
+    }
+}
+
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Null => "null",
+    }
+}
+
+fn eval_body_type(expected_type: &str, json: Option<&serde_json::Value>) -> AssertionResult {
+    let actual_type = json.map(json_type_name).unwrap_or("null");
+    AssertionResult {
+        description: format!("body type == {}", expected_type),
+        passed: actual_type == expected_type,
+        expected: expected_type.to_string(),
+        actual: actual_type.to_string(),
     }
 }
 
@@ -154,6 +180,7 @@ pub fn eval_value_check(
             && check.lt.is_none()
             && check.gt.is_none()
             && check.in_list.is_none()
+            && check.type_of.is_none()
         {
             return true;
         }
@@ -216,6 +243,14 @@ pub fn eval_value_check(
         }
     }
 
+    // type check
+    if let Some(expected_type) = &check.type_of {
+        let actual_type = value.map(json_type_name).unwrap_or("null");
+        if actual_type != expected_type.as_str() {
+            return false;
+        }
+    }
+
     true
 }
 
@@ -249,6 +284,9 @@ fn describe_value_check(check: &ValueCheck) -> String {
     }
     if let Some(v) = &check.in_list {
         parts.push(format!("in {:?}", v));
+    }
+    if let Some(v) = &check.type_of {
+        parts.push(format!("type == {}", v));
     }
     parts.join(", ")
 }
