@@ -40,7 +40,10 @@ pub fn cmd_import(collection_path: &str, output_dir: &str) -> Result<(), CliErro
         .unwrap_or_default();
 
     if items.is_empty() {
-        eprintln!("{} No items found in collection", "warning:".yellow().bold());
+        eprintln!(
+            "{} No items found in collection",
+            "warning:".yellow().bold()
+        );
         return Ok(());
     }
 
@@ -160,7 +163,10 @@ fn flatten_with_folders(items: &[Value], folder: Option<&str>) -> Vec<ImportedRe
                 result.push(req);
             }
         } else if let Some(sub) = item.get("item").and_then(|v| v.as_array()) {
-            let folder_name = item.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown");
+            let folder_name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown");
             result.extend(flatten_with_folders(sub, Some(folder_name)));
         }
     }
@@ -288,54 +294,63 @@ fn parse_test_script(lines: &[&str]) -> ScriptInfo {
         }
 
         // status: pm.response.to.have.status(NNN)
-        if t.contains("have.status(") {
-            if let Some(s) = extract_status(t) {
-                info.status = Some(s);
-                continue;
-            }
+        if t.contains("have.status(")
+            && let Some(s) = extract_status(t)
+        {
+            info.status = Some(s);
+            continue;
         }
 
         // body exists: pm.expect(json.field).to.exist
-        if t.contains("pm.expect(json.") && t.contains(".to.exist") {
-            if let Some(field) = extract_expect_exist(t) {
-                info.body_exists.push(field);
-                continue;
-            }
+        if t.contains("pm.expect(json.")
+            && t.contains(".to.exist")
+            && let Some(field) = extract_expect_exist(t)
+        {
+            info.body_exists.push(field);
+            continue;
         }
 
         // type assertions: pm.expect(json).to.be.a/an('type')  or  pm.expect(json.field)...
-        if t.contains("pm.expect(") && (t.contains(".to.be.a(") || t.contains(".to.be.an(")) {
-            if let Some((field, type_name)) = extract_expect_type(t) {
-                if field == "$" {
-                    info.body_type = Some(type_name);
-                } else {
-                    info.body_field_types.push((field, type_name));
-                }
-                continue;
+        if t.contains("pm.expect(")
+            && (t.contains(".to.be.a(") || t.contains(".to.be.an("))
+            && let Some((field, type_name)) = extract_expect_type(t)
+        {
+            if field == "$" {
+                info.body_type = Some(type_name);
+            } else {
+                info.body_field_types.push((field, type_name));
             }
+            continue;
         }
 
         // body equality: pm.expect(json.field).to.equal(value)
-        if t.contains("pm.expect(json.") && t.contains(".to.equal(") {
-            if let Some((field, value)) = extract_expect_equal(t) {
-                info.body_eq.push((field, value));
-                continue;
-            }
+        if t.contains("pm.expect(json.")
+            && t.contains(".to.equal(")
+            && let Some((field, value)) = extract_expect_equal(t)
+        {
+            info.body_eq.push((field, value));
+            continue;
         }
 
         // response time: .to.be.below(NNN)
-        if t.contains("responseTime") && t.contains(".below(") {
-            if let Some(ms) = extract_below_ms(t) {
-                info.response_time_lt = Some(ms);
-                continue;
-            }
+        if t.contains("responseTime")
+            && t.contains(".below(")
+            && let Some(ms) = extract_below_ms(t)
+        {
+            info.response_time_lt = Some(ms);
+            continue;
         }
 
         // extraction: pm.environment.set('var', json.path)
         if t.contains("pm.environment.set(") {
             match try_parse_env_set(t) {
                 Some(EnvSet::Simple { var, path }) => info.extractions.push((var, path)),
-                Some(EnvSet::Computed { var, raw_var, raw_path, template }) => {
+                Some(EnvSet::Computed {
+                    var,
+                    raw_var,
+                    raw_path,
+                    template,
+                }) => {
                     info.extractions.push((raw_var.clone(), raw_path));
                     info.computed_sets.push((var, raw_var, template));
                 }
@@ -371,16 +386,18 @@ fn parse_pre_script(lines: &[&str]) -> (Vec<(String, String)>, Vec<String>) {
         let closes = t.chars().filter(|&c| c == '}').count();
 
         if skip_block_depth > 0 {
-            skip_block_depth = skip_block_depth.saturating_add(opens).saturating_sub(closes);
+            skip_block_depth = skip_block_depth
+                .saturating_add(opens)
+                .saturating_sub(closes);
             continue;
         }
 
         // pm.variables.set('key', 'literal') → pre_request set
-        if t.contains("pm.variables.set(") {
-            if let Some((k, v)) = try_parse_variables_set(t) {
-                sets.push((k, v));
-                continue;
-            }
+        if t.contains("pm.variables.set(")
+            && let Some((k, v)) = try_parse_variables_set(t)
+        {
+            sets.push((k, v));
+            continue;
         }
 
         // Guard patterns — redundant in ACE's state-machine model, skip silently
@@ -391,7 +408,9 @@ fn parse_pre_script(lines: &[&str]) -> (Vec<(String, String)>, Vec<String>) {
             || t.starts_with("if(!")
             || t.contains("throw new Error(")
         {
-            skip_block_depth = skip_block_depth.saturating_add(opens).saturating_sub(closes);
+            skip_block_depth = skip_block_depth
+                .saturating_add(opens)
+                .saturating_sub(closes);
             continue;
         }
 
@@ -423,7 +442,7 @@ fn try_parse_variables_set(line: &str) -> Option<(String, String)> {
     let val_expr = after[1..].trim_start();
 
     // Only accept literal strings ('value' or "value") — not computed expressions
-    let value = unquote_js_string(val_expr.trim_end_matches(|c| c == ')' || c == ';'))?;
+    let value = unquote_js_string(val_expr.trim_end_matches([')', ';']))?;
     Some((key, value))
 }
 
@@ -490,7 +509,11 @@ fn extract_expect_exist(line: &str) -> Option<String> {
     let rest = &line[pos + 15..];
     let end = rest.find(')')?;
     let field = rest[..end].trim();
-    if !field.is_empty() && field.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+    if !field.is_empty()
+        && field
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    {
         Some(field.to_string())
     } else {
         None
@@ -540,12 +563,12 @@ fn try_parse_env_set(line: &str) -> Option<EnvSet> {
 
     // Simple dot-path: json.field  or  json.nested.field
     if let Some(path) = value_expr.strip_prefix("json.") {
-        let end = path
-            .find(|c: char| c == ')' || c == ' ' || c == ';')
-            .unwrap_or(path.len());
+        let end = path.find([')', ' ', ';']).unwrap_or(path.len());
         let field = &path[..end];
         if !field.is_empty()
-            && field.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+            && field
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
         {
             return Some(EnvSet::Simple {
                 var: var_name,
@@ -557,9 +580,7 @@ fn try_parse_env_set(line: &str) -> Option<EnvSet> {
     // Array index at root: json[N].field  →  [N].field
     if value_expr.starts_with("json[") {
         let bracket = &value_expr[4..]; // strip "json", keep "[N].field..."
-        let end = bracket
-            .find(|c: char| c == ')' || c == ' ' || c == ';')
-            .unwrap_or(bracket.len());
+        let end = bracket.find([')', ' ', ';']).unwrap_or(bracket.len());
         let path = &bracket[..end];
         if is_valid_index_path(path) {
             return Some(EnvSet::Simple {
@@ -580,7 +601,9 @@ fn try_parse_env_set(line: &str) -> Option<EnvSet> {
 /// Returns true for paths like `[0].id` or `[2].data.name`.
 fn is_valid_index_path(path: &str) -> bool {
     path.starts_with('[')
-        && path.chars().all(|c| c.is_alphanumeric() || matches!(c, '[' | ']' | '.' | '_'))
+        && path
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '[' | ']' | '.' | '_'))
 }
 
 /// Detect `'prefix' + json.field` or `json.field + 'suffix'` and return a Computed variant.
@@ -590,14 +613,13 @@ fn try_parse_string_concat(expr: &str, var_name: &str) -> Option<EnvSet> {
     let left = expr[..plus].trim();
     let right = expr[plus + 3..].trim();
     // Trim trailing `)` or `;` from right
-    let right = right.trim_end_matches(|c| c == ')' || c == ';').trim();
+    let right = right.trim_end_matches([')', ';']).trim();
 
     let (prefix, suffix, json_part) =
         if (left.starts_with('\'') || left.starts_with('"')) && right.starts_with("json.") {
             let lit = unquote_js_string(left)?;
             (lit, String::new(), right)
-        } else if left.starts_with("json.") && (right.starts_with('\'') || right.starts_with('"'))
-        {
+        } else if left.starts_with("json.") && (right.starts_with('\'') || right.starts_with('"')) {
             let lit = unquote_js_string(right)?;
             (String::new(), lit, left)
         } else {
@@ -605,12 +627,16 @@ fn try_parse_string_concat(expr: &str, var_name: &str) -> Option<EnvSet> {
         };
 
     let field = json_part.strip_prefix("json.")?;
-    if field.is_empty() || !field.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+    if field.is_empty()
+        || !field
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    {
         return None;
     }
 
     let raw_var = format!("_{}_raw", slugify(var_name));
-    let template = format!("{}{{{{{}}}}}{}",  prefix, raw_var, suffix);
+    let template = format!("{}{{{{{}}}}}{}", prefix, raw_var, suffix);
 
     Some(EnvSet::Computed {
         var: var_name.to_string(),
@@ -794,9 +820,10 @@ fn build_yaml(name: &str, vars: &[(String, String)], requests: &[ImportedRequest
         }
 
         // Fix 4 + 5: assertions from test scripts + heuristic status fallback
-        let effective_status = req.test_script.status.unwrap_or_else(|| {
-            if req.method == "POST" { 201 } else { 200 }
-        });
+        let effective_status = req
+            .test_script
+            .status
+            .unwrap_or_else(|| if req.method == "POST" { 201 } else { 200 });
         let has_body_checks = !req.test_script.body_exists.is_empty()
             || !req.test_script.body_eq.is_empty()
             || !req.test_script.body_field_types.is_empty();
@@ -859,7 +886,11 @@ fn build_yaml(name: &str, vars: &[(String, String)], requests: &[ImportedRequest
             yaml.push_str("    pre_request:\n");
             yaml.push_str("      - set:\n");
             for (k, v) in &req.pre_request_sets {
-                yaml.push_str(&format!("          {}: \"{}\"\n", k, v.replace('"', "\\\"")));
+                yaml.push_str(&format!(
+                    "          {}: \"{}\"\n",
+                    k,
+                    v.replace('"', "\\\"")
+                ));
             }
         }
 
