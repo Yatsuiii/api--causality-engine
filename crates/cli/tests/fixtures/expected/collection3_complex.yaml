@@ -1,0 +1,152 @@
+name: "ACE Import Test — Complex"
+initial_state: start
+variables:
+  base_url: "https://jsonplaceholder.typicode.com"
+steps:
+  # --- Folder: Authentication ---
+  - name: OAuth2 Token Exchange
+    method: POST
+    url: "{{base_url}}/posts"
+    tags: [Authentication]
+    headers:
+      Authorization: "{{auth_header}}"
+      Content-Type: "application/x-www-form-urlencoded"
+    # NOTE: Postman body mode was 'urlencoded' — fields emitted as a JSON map.
+    #       ACE sends body as JSON; adjust Content-Type and encoding if your API requires form encoding.
+    body:
+      client_id: test-client
+      grant_type: '{{grant_type}}'
+      scope: read write
+    assert:
+      - status: 201
+    extract:
+      _api_token_raw: id
+      user_id: userId
+      _refresh_token_raw: id
+    post_request:
+      - set:
+          api_token: "bearer-token-{{_api_token_raw}}"
+      - set:
+          refresh_token: "refresh-{{_refresh_token_raw}}"
+    pre_request:
+      - set:
+          grant_type: "client_credentials"
+    # WARN: pre-request lines not translated:
+    #   pm.variables.set('auth_header', 'Basic ' + encoded);
+    # WARN: test script lines not translated:
+    #   pm.environment.set('api_token', '');
+    transition:
+      from: start
+      to: oauth2_token_exchange
+  - name: Refresh Token
+    method: POST
+    url: "{{base_url}}/posts"
+    tags: [Authentication]
+    headers:
+      Content-Type: "application/json"
+    body:
+      grant_type: refresh_token
+      refresh_token: '{{refresh_token}}'
+    assert:
+      - status: 201
+    extract:
+      _api_token_raw: id
+    post_request:
+      - set:
+          api_token: "refreshed-token-{{_api_token_raw}}"
+    transition:
+      from: oauth2_token_exchange
+      to: refresh_token
+  # --- Folder: Posts ---
+  - name: Create Post
+    method: POST
+    url: "{{base_url}}/posts"
+    tags: [Posts]
+    headers:
+      Content-Type: "application/json"
+      X-Request-ID: "{{$guid}}"
+      X-Timestamp: "{{timestamp}}"
+    # NOTE: one or more body fields had {{var}} in a non-string JSON position
+    #       and were coerced to strings to preserve the template.
+    #       Adjust types manually if the API requires a number.
+    body:
+      body: Created at {{timestamp}}
+      title: '{{random_title}}'
+      userId: '{{user_id}}'
+    assert:
+      - status: 201
+      - body:
+          id:
+            exists: true
+          title:
+            type: string
+      - response_time_ms:
+          lt: 500
+    extract:
+      post_id: id
+    # WARN: pre-request lines not translated:
+    #   pm.variables.set('timestamp', new Date().toISOString());
+    #   pm.variables.set('random_title', 'Post-' + Math.random().toString(36).substr(2,6));
+    transition:
+      from: refresh_token
+      to: create_post
+  - name: Get Post
+    method: GET
+    url: "{{base_url}}/posts/{{post_id}}"
+    tags: [Posts]
+    headers:
+      Accept: "application/json"
+    assert:
+      - status: 200
+    # WARN: test script lines not translated:
+    #   pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');
+    #   pm.environment.set('post_owner', 'admin');
+    #   pm.environment.set('post_owner', 'user');
+    transition:
+      from: create_post
+      to: get_post
+  # --- Folder: Media ---
+  - name: Upload File (Form Data)
+    method: POST
+    url: "{{base_url}}/posts"
+    tags: [Media]
+    multipart:
+      - name: file
+        file: /path/to/file.txt
+      - name: file_name
+        value: "{{file_name}}"
+      - name: post_id
+        value: "{{post_id}}"
+      - name: description
+        value: "Test upload for post {{post_id}}"
+    assert:
+      - status: 201
+    extract:
+      upload_id: id
+    # WARN: pre-request lines not translated:
+    #   pm.variables.set('file_name', 'test-upload-' + Date.now() + '.txt');
+    transition:
+      from: get_post
+      to: upload_file__form_data
+  # --- Folder: Audit ---
+  - name: Get Audit Log
+    method: GET
+    url: "{{base_url}}/posts?userId={{user_id}}&_start={{audit_from}}&_end={{audit_to}}"
+    tags: [Audit]
+    headers:
+      X-Admin-Key: "{{$env.ADMIN_KEY}}"
+      Accept: "application/json"
+    assert:
+      - status: 200
+    pre_request:
+      - set:
+          audit_from: "2024-01-01"
+    # WARN: pre-request lines not translated:
+    #   pm.variables.set('audit_to', new Date().toISOString().split('T')[0]);
+    # WARN: test script lines not translated:
+    #   pm.environment.set('has_audit_entries', 'true');
+    #   pm.environment.set('last_audit_id', json[json.length - 1].id);
+    #   pm.environment.set('has_audit_entries', 'false');
+    transition:
+      from: upload_file__form_data
+      to: done

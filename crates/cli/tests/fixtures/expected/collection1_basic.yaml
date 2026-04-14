@@ -1,0 +1,66 @@
+name: "ACE Import Test — Basic"
+initial_state: start
+variables:
+  base_url: "https://jsonplaceholder.typicode.com"
+steps:
+  - name: Get Post
+    method: GET
+    url: "{{base_url}}/posts/1"
+    headers:
+      Accept: "application/json"
+    assert:
+      - status: 200
+    transition:
+      from: start
+      to: get_post
+  - name: Get Posts with Query Param
+    method: GET
+    url: "{{base_url}}/posts?userId=1"
+    headers:
+      Accept: "application/json"
+    assert:
+      - status: 200
+    transition:
+      from: get_post
+      to: get_posts_with_query_param
+  - name: Create Post
+    method: POST
+    url: "{{base_url}}/posts"
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+    body:
+      body: This is a test post body
+      title: Test Post
+      userId: 1
+    assert:
+      - status: 201
+    transition:
+      from: get_posts_with_query_param
+      to: create_post
+  - name: Update Post
+    method: PUT
+    url: "{{base_url}}/posts/1"
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+    body:
+      body: Updated body content
+      id: 1
+      title: Updated Title
+      userId: 1
+    assert:
+      - status: 200
+    transition:
+      from: create_post
+      to: update_post
+  - name: Delete Post
+    method: DELETE
+    url: "{{base_url}}/posts/1"
+    headers:
+      Accept: "application/json"
+    assert:
+      - status: 200
+    transition:
+      from: update_post
+      to: done

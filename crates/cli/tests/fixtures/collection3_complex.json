@@ -1,0 +1,350 @@
+{
+  "info": {
+    "name": "ACE Import Test — Complex",
+    "_postman_id": "ace-test-complex-003",
+    "description": "Complex collection to stress test ACE import. OAuth2 auth, nested folders, form-data body, pm.environment.set, if/else conditional logic in scripts.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{$env.API_TOKEN}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    { "key": "base_url",      "value": "https://jsonplaceholder.typicode.com" },
+    { "key": "api_token",     "value": "" },
+    { "key": "refresh_token", "value": "" },
+    { "key": "user_id",       "value": "" },
+    { "key": "post_id",       "value": "" },
+    { "key": "upload_id",     "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "OAuth2 Token Exchange",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var clientId = pm.environment.get('CLIENT_ID') || 'test-client';",
+                  "var clientSecret = pm.environment.get('CLIENT_SECRET') || 'test-secret';",
+                  "var encoded = btoa(clientId + ':' + clientSecret);",
+                  "pm.variables.set('auth_header', 'Basic ' + encoded);",
+                  "pm.variables.set('grant_type', 'client_credentials');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Token exchange succeeded', function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "var json = pm.response.json();",
+                  "if (json && json.id) {",
+                  "    pm.environment.set('api_token', 'bearer-token-' + json.id);",
+                  "    pm.environment.set('user_id', json.userId);",
+                  "} else {",
+                  "    pm.environment.set('api_token', '');",
+                  "}",
+                  "pm.environment.set('refresh_token', 'refresh-' + json.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "{{auth_header}}" },
+              { "key": "Content-Type",  "value": "application/x-www-form-urlencoded" }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "{{grant_type}}" },
+                { "key": "scope",      "value": "read write" },
+                { "key": "client_id",  "value": "test-client" }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/posts",
+              "host": ["{{base_url}}"],
+              "path": ["posts"]
+            },
+            "description": "OAuth2 client credentials — extracts api_token, refresh_token, user_id"
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var rt = pm.environment.get('refresh_token');",
+                  "if (!rt) { throw new Error('No refresh token. Run OAuth2 first.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Refresh succeeded', function () { pm.response.to.have.status(201); });",
+                  "var json = pm.response.json();",
+                  "pm.environment.set('api_token', 'refreshed-token-' + json.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh_token\": \"{{refresh_token}}\",\n  \"grant_type\": \"refresh_token\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/posts",
+              "host": ["{{base_url}}"],
+              "path": ["posts"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Content",
+      "item": [
+        {
+          "name": "Posts",
+          "item": [
+            {
+              "name": "Create Post",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.variables.set('timestamp', new Date().toISOString());",
+                      "pm.variables.set('random_title', 'Post-' + Math.random().toString(36).substr(2,6));"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Post created', function () { pm.response.to.have.status(201); });",
+                      "pm.test('Has id and title', function () {",
+                      "    var json = pm.response.json();",
+                      "    pm.expect(json.id).to.exist;",
+                      "    pm.expect(json.title).to.be.a('string');",
+                      "});",
+                      "pm.test('Response under 500ms', function () {",
+                      "    pm.expect(pm.response.responseTime).to.be.below(500);",
+                      "});",
+                      "var json = pm.response.json();",
+                      "pm.environment.set('post_id', json.id);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [{ "key": "token", "value": "{{api_token}}", "type": "string" }]
+                },
+                "method": "POST",
+                "header": [
+                  { "key": "Content-Type",  "value": "application/json" },
+                  { "key": "X-Request-ID",  "value": "{{$guid}}" },
+                  { "key": "X-Timestamp",   "value": "{{timestamp}}" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"title\": \"{{random_title}}\",\n  \"body\": \"Created at {{timestamp}}\",\n  \"userId\": {{user_id}}\n}",
+                  "options": { "raw": { "language": "json" } }
+                },
+                "url": {
+                  "raw": "{{base_url}}/posts",
+                  "host": ["{{base_url}}"],
+                  "path": ["posts"]
+                }
+              }
+            },
+            {
+              "name": "Get Post",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Status 200', function () { pm.response.to.have.status(200); });",
+                      "pm.test('Content-Type is JSON', function () {",
+                      "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+                      "});",
+                      "var json = pm.response.json();",
+                      "if (json.userId === 1) {",
+                      "    pm.environment.set('post_owner', 'admin');",
+                      "} else {",
+                      "    pm.environment.set('post_owner', 'user');",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [{ "key": "token", "value": "{{api_token}}", "type": "string" }]
+                },
+                "method": "GET",
+                "header": [{ "key": "Accept", "value": "application/json" }],
+                "url": {
+                  "raw": "{{base_url}}/posts/{{post_id}}",
+                  "host": ["{{base_url}}"],
+                  "path": ["posts", "{{post_id}}"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Media",
+          "item": [
+            {
+              "name": "Upload File (Form Data)",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.variables.set('file_name', 'test-upload-' + Date.now() + '.txt');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Upload accepted', function () { pm.response.to.have.status(201); });",
+                      "var json = pm.response.json();",
+                      "pm.environment.set('upload_id', json.id);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [{ "key": "token", "value": "{{api_token}}", "type": "string" }]
+                },
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    { "key": "file",        "type": "file", "src": "/path/to/file.txt" },
+                    { "key": "file_name",   "value": "{{file_name}}",                   "type": "text" },
+                    { "key": "post_id",     "value": "{{post_id}}",                      "type": "text" },
+                    { "key": "description", "value": "Test upload for post {{post_id}}", "type": "text" }
+                  ]
+                },
+                "url": {
+                  "raw": "{{base_url}}/posts",
+                  "host": ["{{base_url}}"],
+                  "path": ["posts"]
+                },
+                "description": "Multipart form-data upload with file attachment and text metadata"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "Audit",
+          "item": [
+            {
+              "name": "Get Audit Log",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var token = pm.environment.get('api_token');",
+                      "if (!token || token === '') { throw new Error('Admin token required'); }",
+                      "pm.variables.set('audit_from', '2024-01-01');",
+                      "pm.variables.set('audit_to', new Date().toISOString().split('T')[0]);"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Audit log returned', function () { pm.response.to.have.status(200); });",
+                      "var json = pm.response.json();",
+                      "if (Array.isArray(json) && json.length > 0) {",
+                      "    pm.environment.set('has_audit_entries', 'true');",
+                      "    pm.environment.set('last_audit_id', json[json.length - 1].id);",
+                      "} else {",
+                      "    pm.environment.set('has_audit_entries', 'false');",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [{ "key": "token", "value": "{{api_token}}", "type": "string" }]
+                },
+                "method": "GET",
+                "header": [
+                  { "key": "X-Admin-Key", "value": "{{$env.ADMIN_KEY}}" },
+                  { "key": "Accept",      "value": "application/json" }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/posts?userId={{user_id}}&_start={{audit_from}}&_end={{audit_to}}",
+                  "host": ["{{base_url}}"],
+                  "path": ["posts"],
+                  "query": [
+                    { "key": "userId",  "value": "{{user_id}}" },
+                    { "key": "_start",  "value": "{{audit_from}}" },
+                    { "key": "_end",    "value": "{{audit_to}}" }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
