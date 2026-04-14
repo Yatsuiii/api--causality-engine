@@ -1,0 +1,103 @@
+name: "ACE Import Test — Intermediate"
+initial_state: start
+variables:
+  base_url: "https://jsonplaceholder.typicode.com"
+steps:
+  # --- Folder: Auth ---
+  - name: Login
+    method: POST
+    url: "{{base_url}}/posts"
+    tags: [Auth]
+    headers:
+      Content-Type: "application/json"
+    body:
+      email: '{{email}}'
+      password: '{{password}}'
+      title: Login Request
+      userId: 1
+    assert:
+      - status: 201
+      - body:
+          id:
+            exists: true
+    extract:
+      _token_raw: id
+      user_id: id
+    post_request:
+      - set:
+          token: "Bearer simulated-token-{{_token_raw}}"
+    pre_request:
+      - set:
+          email: "test@example.com"
+          password: "hunter2"
+    transition:
+      from: start
+      to: login
+  # --- Folder: User ---
+  - name: Get User Profile
+    method: GET
+    url: "{{base_url}}/posts/{{user_id}}"
+    tags: [User]
+    headers:
+      Authorization: "{{token}}"
+      Accept: "application/json"
+    assert:
+      - status: 200
+      - body:
+          userId:
+            exists: true
+      - response_time_ms:
+          lt: 500
+    transition:
+      from: login
+      to: get_user_profile
+  - name: Update User Profile
+    method: PUT
+    url: "{{base_url}}/posts/{{user_id}}"
+    tags: [User]
+    headers:
+      Authorization: "{{token}}"
+      Content-Type: "application/json"
+    # NOTE: one or more body fields had {{var}} in a non-string JSON position
+    #       and were coerced to strings to preserve the template.
+    #       Adjust types manually if the API requires a number.
+    body:
+      body: Updated bio
+      id: '{{user_id}}'
+      title: Updated Profile
+      userId: 1
+    assert:
+      - status: 200
+      - body:
+          title:
+            eq: "Updated Profile"
+    transition:
+      from: get_user_profile
+      to: update_user_profile
+  # --- Folder: Posts ---
+  - name: Get All Posts
+    method: GET
+    url: "{{base_url}}/posts?userId={{user_id}}"
+    tags: [Posts]
+    headers:
+      Authorization: "{{token}}"
+    assert:
+      - status: 200
+      - body_type: array
+    extract:
+      first_post_id: "[0].id"
+    transition:
+      from: update_user_profile
+      to: get_all_posts
+  - name: Get Post Comments
+    method: GET
+    url: "{{base_url}}/posts/{{first_post_id}}/comments"
+    tags: [Posts]
+    headers:
+      Authorization: "{{token}}"
+    assert:
+      - status: 200
+      - body_type: array
+    transition:
+      from: get_all_posts
+      to: done

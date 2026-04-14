@@ -6,16 +6,16 @@ use serde_json::Value;
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub fn cmd_import(collection_path: &str, output_dir: &str) -> Result<(), CliError> {
-    let json_str = read_file(collection_path)?;
-    let collection: Value = serde_json::from_str(&json_str).map_err(CliError::JsonParse)?;
+/// Parse a Postman collection JSON string and return the translated ACE YAML.
+/// Separated from file I/O so it can be called directly in tests.
+pub(crate) fn collection_json_to_yaml(json_str: &str) -> Result<String, CliError> {
+    let collection: Value = serde_json::from_str(json_str).map_err(CliError::JsonParse)?;
 
     let name = collection
         .pointer("/info/name")
         .and_then(|v| v.as_str())
         .unwrap_or("imported");
 
-    // Fix 1: collect collection-level variables (non-empty values only)
     let coll_vars: Vec<(String, String)> = collection
         .get("variable")
         .and_then(|v| v.as_array())
@@ -39,6 +39,20 @@ pub fn cmd_import(collection_path: &str, output_dir: &str) -> Result<(), CliErro
         .cloned()
         .unwrap_or_default();
 
+    let requests = flatten_with_folders(&items, None);
+    Ok(build_yaml(name, &coll_vars, &requests))
+}
+
+pub fn cmd_import(collection_path: &str, output_dir: &str) -> Result<(), CliError> {
+    let json_str = read_file(collection_path)?;
+
+    let collection: Value = serde_json::from_str(&json_str).map_err(CliError::JsonParse)?;
+    let items = collection
+        .get("item")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
     if items.is_empty() {
         eprintln!(
             "{} No items found in collection",
@@ -47,7 +61,6 @@ pub fn cmd_import(collection_path: &str, output_dir: &str) -> Result<(), CliErro
         return Ok(());
     }
 
-    // Fix 6: flatten while tracking which folder each request came from
     let requests = flatten_with_folders(&items, None);
 
     if requests.is_empty() {
@@ -58,7 +71,12 @@ pub fn cmd_import(collection_path: &str, output_dir: &str) -> Result<(), CliErro
         return Ok(());
     }
 
-    let yaml = build_yaml(name, &coll_vars, &requests);
+    let name = collection
+        .pointer("/info/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("imported");
+
+    let yaml = collection_json_to_yaml(&json_str)?;
 
     let filename = format!("{}.yaml", slugify(name));
     let output_path = if output_dir == "." {
@@ -128,6 +146,11 @@ struct ImportedRequest {
     pre_request_sets: Vec<(String, String)>,
     /// Pre-request lines that couldn't be translated (emitted as # WARN).
     pre_script_untranslatable: Vec<String>,
+    /// NOTE comment for non-raw body modes (e.g. urlencoded → JSON translation notice).
+    body_mode_note: Option<String>,
+    /// Multipart form fields from Postman formdata → ACE `multipart:` block.
+    /// Tuple: (name, text_value, file_path)
+    multipart_fields: Vec<(String, Option<String>, Option<String>)>,
 }
 
 #[derive(Default)]
@@ -201,24 +224,99 @@ fn parse_request(item: &Value, folder: Option<&str>) -> Option<ImportedRequest> 
         .unwrap_or_default();
 
     // Fix 7: parse body with template-variable fallback
-    let raw_body = request
-        .get("body")
-        .and_then(|b| b.get("raw"))
+    let body_obj = request.get("body");
+    let body_mode = body_obj
+        .and_then(|b| b.get("mode"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .unwrap_or("");
 
-    let (body_yaml, body_had_coercion, body_raw_fallback) = match raw_body {
-        Some(ref raw) => {
-            let (yaml, coerced) = body_to_yaml(raw);
-            let fallback = if yaml.is_none() {
-                Some(raw.clone())
-            } else {
-                None
-            };
-            (yaml, coerced, fallback)
-        }
-        None => (None, false, None),
-    };
+    let (body_yaml, body_had_coercion, body_raw_fallback, body_mode_note, multipart_fields) =
+        match body_mode {
+            "raw" => {
+                let raw = body_obj
+                    .and_then(|b| b.get("raw"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                match raw {
+                    Some(ref s) => {
+                        let (yaml, coerced) = body_to_yaml(s);
+                        let fallback = if yaml.is_none() { Some(s.clone()) } else { None };
+                        (yaml, coerced, fallback, None, vec![])
+                    }
+                    None => (None, false, None, None, vec![]),
+                }
+            }
+            "urlencoded" => {
+                let fields: Vec<(String, String)> = body_obj
+                    .and_then(|b| b.get("urlencoded"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter(|f| {
+                                !f.get("disabled")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false)
+                            })
+                            .filter_map(|f| {
+                                let k = f.get("key")?.as_str()?.to_string();
+                                let v = f
+                                    .get("value")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                Some((k, v))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if fields.is_empty() {
+                    (None, false, None, None, vec![])
+                } else {
+                    let map: serde_json::Map<String, Value> = fields
+                        .into_iter()
+                        .map(|(k, v)| (k, Value::String(v)))
+                        .collect();
+                    let yaml_lines = json_to_yaml_lines(&Value::Object(map));
+                    let note = "Postman body mode was 'urlencoded' — fields emitted as a JSON map.\n    #       ACE sends body as JSON; adjust Content-Type and encoding if your API requires form encoding.".to_string();
+                    (Some(yaml_lines), false, None, Some(note), vec![])
+                }
+            }
+            "formdata" => {
+                let entries = body_obj
+                    .and_then(|b| b.get("formdata"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter(|f| {
+                                !f.get("disabled")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false)
+                            })
+                            .filter_map(|f| {
+                                let name = f.get("key")?.as_str()?.to_string();
+                                if f.get("type").and_then(|v| v.as_str()) == Some("file") {
+                                    let src = f
+                                        .get("src")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("/path/to/file")
+                                        .to_string();
+                                    Some((name, None, Some(src)))
+                                } else {
+                                    let value = f
+                                        .get("value")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    Some((name, Some(value), None))
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (None, false, None, None, entries)
+            }
+            _ => (None, false, None, None, vec![]),
+        };
 
     // Parse Postman event scripts
     let events = item.get("event").and_then(|v| v.as_array());
@@ -277,6 +375,8 @@ fn parse_request(item: &Value, folder: Option<&str>) -> Option<ImportedRequest> 
         test_script,
         pre_request_sets,
         pre_script_untranslatable,
+        body_mode_note,
+        multipart_fields,
     })
 }
 
@@ -441,8 +541,21 @@ fn try_parse_variables_set(line: &str) -> Option<(String, String)> {
     }
     let val_expr = after[1..].trim_start();
 
-    // Only accept literal strings ('value' or "value") — not computed expressions
-    let value = unquote_js_string(val_expr.trim_end_matches([')', ';']))?;
+    // Value must be a simple string literal: opening quote, contents, matching closing quote,
+    // and nothing but whitespace/); after the closing quote.
+    // Reject computed expressions like 'prefix' + expr + 'suffix'.
+    let q2 = val_expr.chars().next()?;
+    if q2 != '\'' && q2 != '"' {
+        return None;
+    }
+    let val_inner = &val_expr[1..];
+    let end_v = val_inner.find(q2)?;
+    let value = val_inner[..end_v].to_string();
+    // Reject if anything meaningful follows the closing quote (e.g. `+ Date.now()`)
+    let trailing = val_inner[end_v + 1..].trim_end_matches(|c: char| " );".contains(c));
+    if !trailing.is_empty() {
+        return None;
+    }
     Some((key, value))
 }
 
@@ -600,8 +713,18 @@ fn try_parse_env_set(line: &str) -> Option<EnvSet> {
 
 /// Returns true for paths like `[0].id` or `[2].data.name`.
 fn is_valid_index_path(path: &str) -> bool {
-    path.starts_with('[')
-        && path
+    // Accept [N].field paths only when N is a literal integer, not an expression
+    // like `json.length - 1`. Paths like `[0].id` or `[2].data.name` are valid.
+    if !path.starts_with('[') {
+        return false;
+    }
+    let rest = &path[1..];
+    let close = match rest.find(']') {
+        Some(i) if i > 0 => i,
+        _ => return false,
+    };
+    rest[..close].chars().all(|c| c.is_ascii_digit())
+        && rest[close + 1..]
             .chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '[' | ']' | '.' | '_'))
 }
@@ -801,7 +924,10 @@ fn build_yaml(name: &str, vars: &[(String, String)], requests: &[ImportedRequest
             }
         }
 
-        // Fix 7: body with coercion note / raw fallback comment
+        // Fix 7: body with coercion note / raw fallback comment / non-raw mode note
+        if let Some(ref note) = req.body_mode_note {
+            yaml.push_str(&format!("    # NOTE: {}\n", note));
+        }
         if req.body_had_coercion {
             yaml.push_str(
                 "    # NOTE: one or more body fields had {{var}} in a non-string JSON position\n",
@@ -816,6 +942,23 @@ fn build_yaml(name: &str, vars: &[(String, String)], requests: &[ImportedRequest
             yaml.push_str("    # WARN: body could not be parsed — reproduce manually:\n");
             for line in raw.lines() {
                 yaml.push_str(&format!("    #   {}\n", line));
+            }
+        }
+
+        // formdata → multipart: block
+        if !req.multipart_fields.is_empty() {
+            yaml.push_str("    multipart:\n");
+            for (name, value, file) in &req.multipart_fields {
+                yaml.push_str(&format!("      - name: {}\n", name));
+                if let Some(v) = value {
+                    yaml.push_str(&format!(
+                        "        value: \"{}\"\n",
+                        v.replace('"', "\\\"")
+                    ));
+                }
+                if let Some(f) = file {
+                    yaml.push_str(&format!("        file: {}\n", f));
+                }
             }
         }
 
@@ -988,5 +1131,255 @@ fn sanitize_yaml_str(s: &str) -> String {
         format!("\"{}\"", s.replace('"', "\\\""))
     } else {
         s.to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // try_parse_variables_set — only pure string literals should translate
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn variables_set_single_quoted_literal() {
+        assert_eq!(
+            try_parse_variables_set("pm.variables.set('grant_type', 'client_credentials');"),
+            Some(("grant_type".into(), "client_credentials".into()))
+        );
+    }
+
+    #[test]
+    fn variables_set_double_quoted_literal() {
+        assert_eq!(
+            try_parse_variables_set(r#"pm.variables.set("key", "value");"#),
+            Some(("key".into(), "value".into()))
+        );
+    }
+
+    #[test]
+    fn variables_set_empty_string_literal() {
+        assert_eq!(
+            try_parse_variables_set("pm.variables.set('flag', '');"),
+            Some(("flag".into(), "".into()))
+        );
+    }
+
+    /// Bug 3 regression: 'prefix' + expr + 'suffix' must be rejected, not
+    /// silently accepted as a garbage literal.
+    #[test]
+    fn variables_set_concat_expression_rejected() {
+        assert_eq!(
+            try_parse_variables_set(
+                "pm.variables.set('file_name', 'test-upload-' + Date.now() + '.txt');"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn variables_set_unquoted_value_rejected() {
+        assert_eq!(
+            try_parse_variables_set("pm.variables.set('key', someVar);"),
+            None
+        );
+    }
+
+    #[test]
+    fn variables_set_no_value_arg_rejected() {
+        assert_eq!(try_parse_variables_set("pm.variables.set('key')"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // is_valid_index_path — only literal numeric indices
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn index_path_numeric_simple() {
+        assert!(is_valid_index_path("[0].id"));
+    }
+
+    #[test]
+    fn index_path_numeric_nested() {
+        assert!(is_valid_index_path("[2].data.name"));
+    }
+
+    #[test]
+    fn index_path_multi_bracket() {
+        assert!(is_valid_index_path("[0][1].value"));
+    }
+
+    /// Bug 4 regression: json[json.length - 1].id is truncated to [json.length
+    /// by the caller; that truncated path must not be accepted.
+    #[test]
+    fn index_path_expression_rejected() {
+        assert!(!is_valid_index_path("[json.length"));
+    }
+
+    #[test]
+    fn index_path_empty_index_rejected() {
+        assert!(!is_valid_index_path("[].id"));
+    }
+
+    #[test]
+    fn index_path_non_numeric_index_rejected() {
+        assert!(!is_valid_index_path("[0a].id"));
+    }
+
+    #[test]
+    fn index_path_no_bracket_rejected() {
+        assert!(!is_valid_index_path("id"));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_test_script — status, extraction, computed, untranslatable
+    // -----------------------------------------------------------------------
+
+    fn lines(src: &str) -> Vec<&str> {
+        src.lines().collect()
+    }
+
+    #[test]
+    fn test_script_status_extracted() {
+        let src = "pm.test('ok', function () { pm.response.to.have.status(200); });";
+        let info = parse_test_script(&lines(src));
+        assert_eq!(info.status, Some(200));
+    }
+
+    #[test]
+    fn test_script_body_exists() {
+        let src = "pm.expect(json.id).to.exist;";
+        let info = parse_test_script(&lines(src));
+        assert_eq!(info.body_exists, vec!["id"]);
+    }
+
+    #[test]
+    fn test_script_body_field_type() {
+        let src = "pm.expect(json.title).to.be.a('string');";
+        let info = parse_test_script(&lines(src));
+        assert_eq!(info.body_field_types, vec![("title".into(), "string".into())]);
+    }
+
+    #[test]
+    fn test_script_body_type_root() {
+        let src = "pm.expect(json).to.be.an('array');";
+        let info = parse_test_script(&lines(src));
+        assert_eq!(info.body_type, Some("array".into()));
+    }
+
+    #[test]
+    fn test_script_response_time() {
+        let src = "pm.expect(pm.response.responseTime).to.be.below(500);";
+        let info = parse_test_script(&lines(src));
+        assert_eq!(info.response_time_lt, Some(500));
+    }
+
+    #[test]
+    fn test_script_simple_extraction() {
+        let src = "pm.environment.set('post_id', json.id);";
+        let info = parse_test_script(&lines(src));
+        assert_eq!(info.extractions, vec![("post_id".into(), "id".into())]);
+        assert!(info.computed_sets.is_empty());
+    }
+
+    #[test]
+    fn test_script_computed_extraction() {
+        let src = "pm.environment.set('api_token', 'bearer-' + json.id);";
+        let info = parse_test_script(&lines(src));
+        // raw field extracted, final var computed via post_request
+        assert!(info.extractions.iter().any(|(_, p)| p == "id"));
+        assert!(info.computed_sets.iter().any(|(v, _, _)| v == "api_token"));
+    }
+
+    #[test]
+    fn test_script_literal_env_set_is_untranslatable() {
+        // pm.environment.set with a literal string value (not a json path) cannot
+        // be translated — it should appear in untranslatable, not extractions.
+        let src = "pm.environment.set('has_entries', 'true');";
+        let info = parse_test_script(&lines(src));
+        assert!(info.extractions.is_empty());
+        assert!(!info.untranslatable.is_empty());
+    }
+
+    /// Bug 4 regression at the script level: json[json.length - 1].id must not
+    /// produce a garbled extract: entry.
+    #[test]
+    fn test_script_dynamic_array_index_is_untranslatable() {
+        let src = "pm.environment.set('last_id', json[json.length - 1].id);";
+        let info = parse_test_script(&lines(src));
+        assert!(info.extractions.is_empty());
+        assert!(!info.untranslatable.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_pre_script — literal sets pass, computed/guard lines warn
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pre_script_literal_set_translated() {
+        let src = "pm.variables.set('grant_type', 'client_credentials');";
+        let (sets, warns) = parse_pre_script(&lines(src));
+        assert_eq!(sets, vec![("grant_type".into(), "client_credentials".into())]);
+        assert!(warns.is_empty());
+    }
+
+    #[test]
+    fn pre_script_computed_set_warned() {
+        let src = "pm.variables.set('file_name', 'upload-' + Date.now() + '.txt');";
+        let (sets, warns) = parse_pre_script(&lines(src));
+        assert!(sets.is_empty());
+        assert!(!warns.is_empty());
+    }
+
+    #[test]
+    fn pre_script_guard_block_skipped() {
+        let src = "var token = pm.environment.get('token');\nif (!token) { throw new Error('missing'); }";
+        let (sets, warns) = parse_pre_script(&lines(src));
+        assert!(sets.is_empty());
+        assert!(warns.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Snapshot tests — full pipeline, all three benchmark collections
+    // -----------------------------------------------------------------------
+
+    fn snap(collection_json: &str, expected_yaml: &str) {
+        let actual = collection_json_to_yaml(collection_json)
+            .expect("collection_json_to_yaml failed");
+        assert_eq!(
+            actual, expected_yaml,
+            "\n\nSnapshot mismatch — if the output change is intentional, \
+             regenerate the fixture with:\n  \
+             cargo run -p ace -- import <collection.json> -o crates/cli/tests/fixtures/expected/\n"
+        );
+    }
+
+    #[test]
+    fn snapshot_collection1_basic() {
+        snap(
+            include_str!("../tests/fixtures/collection1_basic.json"),
+            include_str!("../tests/fixtures/expected/collection1_basic.yaml"),
+        );
+    }
+
+    #[test]
+    fn snapshot_collection2_intermediate() {
+        snap(
+            include_str!("../tests/fixtures/collection2_intermediate.json"),
+            include_str!("../tests/fixtures/expected/collection2_intermediate.yaml"),
+        );
+    }
+
+    #[test]
+    fn snapshot_collection3_complex() {
+        snap(
+            include_str!("../tests/fixtures/collection3_complex.json"),
+            include_str!("../tests/fixtures/expected/collection3_complex.yaml"),
+        );
     }
 }
