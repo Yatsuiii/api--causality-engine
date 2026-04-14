@@ -979,6 +979,7 @@ mod tests {
                     timeout_ms: None,
                     pre_request: None,
                     post_request: None,
+                    tags: None,
                 },
                 Step {
                     name: "step2".into(),
@@ -999,6 +1000,7 @@ mod tests {
                     timeout_ms: None,
                     pre_request: None,
                     post_request: None,
+                    tags: None,
                 },
             ],
         };
@@ -1044,6 +1046,7 @@ mod tests {
                 timeout_ms: None,
                 pre_request: None,
                 post_request: None,
+                tags: None,
             }],
         };
 

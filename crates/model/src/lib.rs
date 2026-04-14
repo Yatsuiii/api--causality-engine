@@ -695,6 +695,7 @@ steps:
             timeout_ms: None,
             pre_request: None,
             post_request: None,
+            tags: None,
         };
         assert!(step.resolved_edges().is_err());
     }
@@ -717,6 +718,7 @@ steps:
             timeout_ms: None,
             pre_request: None,
             post_request: None,
+            tags: None,
         };
         assert!(step.resolved_edges().is_err());
     }
@@ -739,6 +741,7 @@ steps:
             timeout_ms: None,
             pre_request: None,
             post_request: None,
+            tags: None,
         };
         assert_eq!(step.state_name(), "my_step");
     }
@@ -761,6 +764,7 @@ steps:
             timeout_ms: None,
             pre_request: None,
             post_request: None,
+            tags: None,
         };
         assert_eq!(step.state_name(), "custom_state");
     }
