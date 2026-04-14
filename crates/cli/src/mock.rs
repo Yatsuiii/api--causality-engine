@@ -4,6 +4,10 @@ use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
+const CORS_HEADERS: &str = "Access-Control-Allow-Origin: *\r\n\
+    Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n\
+    Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With\r\n";
+
 struct MockRoute {
     method: String,
     path: String,
@@ -33,6 +37,9 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) -> Result<(), CliError> {
             })
             .unwrap_or(200);
 
+        // Response body is shaped from extract: fields only — those define what
+        // the scenario expects the response to contain. The request body: fields
+        // are what is *sent*, not what is received, so they must not appear here.
         let mut mock_body = serde_json::Map::new();
         if let Some(extract) = &step.extract {
             for json_key in extract.values() {
@@ -40,14 +47,6 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) -> Result<(), CliError> {
                     json_key.clone(),
                     serde_json::Value::String(format!("mock_{}", json_key)),
                 );
-            }
-        }
-        if let Some(body) = &step.body
-            && let Ok(json_str) = serde_json::to_string(body)
-            && let Ok(serde_json::Value::Object(obj)) = serde_json::from_str(&json_str)
-        {
-            for (k, v) in obj {
-                mock_body.insert(k, v);
             }
         }
 
@@ -70,6 +69,25 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) -> Result<(), CliError> {
         });
     }
 
+    // Warn about duplicate method+path combinations — only the first match is
+    // ever served; later steps with the same route are silently unreachable.
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut collisions: Vec<String> = Vec::new();
+    for (i, route) in routes.iter().enumerate() {
+        let key = format!("{} {}", route.method, route.path);
+        if let Some(first) = seen.get(&key) {
+            collisions.push(format!(
+                "step {} and step {} both map to {} {}",
+                first + 1,
+                i + 1,
+                route.method,
+                route.path
+            ));
+        } else {
+            seen.insert(key, i);
+        }
+    }
+
     println!(
         "\n{} Mock server for: {}",
         "▶".cyan().bold(),
@@ -85,6 +103,13 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) -> Result<(), CliError> {
             route.path,
             route.status
         );
+    }
+    if !collisions.is_empty() {
+        eprintln!("\n  {}", "warning: duplicate routes detected — only the first match is served:".yellow().bold());
+        for c in &collisions {
+            eprintln!("    {} {}", "•".yellow(), c);
+        }
+        eprintln!("  {}", "Consider using unique paths or path parameters per step.".dimmed());
     }
     println!("\n  {} Ctrl+C to stop\n", "Tip:".dimmed());
 
@@ -119,12 +144,34 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) -> Result<(), CliError> {
         let req_method = parts[0];
         let req_path = parts[1];
 
-        // Drain headers
+        // Drain headers, tracking Content-Length so we can consume the body too.
+        let mut content_length: usize = 0;
         loop {
             let mut line = String::new();
             if buf_reader.read_line(&mut line).await.is_err() || line.trim().is_empty() {
                 break;
             }
+            let lower = line.to_lowercase();
+            if let Some(rest) = lower.strip_prefix("content-length:") {
+                content_length = rest.trim().parse().unwrap_or(0);
+            }
+        }
+
+        // Consume the request body so the client doesn't stall waiting for it
+        // to be read before it accepts the response.
+        if content_length > 0 {
+            let mut body_buf = vec![0u8; content_length];
+            let _ = tokio::io::AsyncReadExt::read_exact(&mut buf_reader, &mut body_buf).await;
+        }
+
+        // Handle CORS preflight
+        if req_method == "OPTIONS" {
+            let response = format!(
+                "HTTP/1.1 204 No Content\r\n{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                CORS_HEADERS
+            );
+            let _ = writer.write_all(response.as_bytes()).await;
+            continue;
         }
 
         // Find matching route
@@ -150,11 +197,12 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) -> Result<(), CliError> {
         };
 
         let response = format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n{}",
             status,
             status_text(status),
             content_type,
             body.len(),
+            CORS_HEADERS,
             body
         );
 
@@ -208,17 +256,127 @@ fn path_matches(pattern: &str, actual: &str) -> bool {
         .all(|(p, a)| p.contains("{{") || *p == *a)
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // extract_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_path_absolute_url() {
+        assert_eq!(extract_path("https://api.example.com/users/1"), "/users/1");
+    }
+
+    #[test]
+    fn extract_path_template_base_url() {
+        assert_eq!(extract_path("{{base_url}}/posts"), "/posts");
+    }
+
+    #[test]
+    fn extract_path_template_with_param() {
+        assert_eq!(extract_path("{{base_url}}/posts/{{post_id}}"), "/posts/{{post_id}}");
+    }
+
+    #[test]
+    fn extract_path_already_slash() {
+        assert_eq!(extract_path("/health"), "/health");
+    }
+
+    #[test]
+    fn extract_path_with_query_string() {
+        assert_eq!(
+            extract_path("{{base_url}}/posts?userId={{user_id}}"),
+            "/posts?userId={{user_id}}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // path_matches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn path_matches_exact() {
+        assert!(path_matches("/users/1", "/users/1"));
+    }
+
+    #[test]
+    fn path_matches_template_param() {
+        assert!(path_matches("/users/{{user_id}}", "/users/42"));
+    }
+
+    #[test]
+    fn path_matches_template_does_not_cross_segments() {
+        assert!(!path_matches("/users/{{user_id}}", "/users/42/profile"));
+    }
+
+    #[test]
+    fn path_matches_different_literals() {
+        assert!(!path_matches("/users/1", "/users/2"));
+    }
+
+    #[test]
+    fn path_matches_ignores_query_string() {
+        assert!(path_matches("/posts?userId={{user_id}}", "/posts?userId=5"));
+    }
+
+    #[test]
+    fn path_matches_prefix_not_enough() {
+        assert!(!path_matches("/posts", "/posts/comments"));
+    }
+
+    // -----------------------------------------------------------------------
+    // status_text
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn status_text_known_codes() {
+        assert_eq!(status_text(200), "OK");
+        assert_eq!(status_text(201), "Created");
+        assert_eq!(status_text(204), "No Content");
+        assert_eq!(status_text(400), "Bad Request");
+        assert_eq!(status_text(401), "Unauthorized");
+        assert_eq!(status_text(404), "Not Found");
+        assert_eq!(status_text(422), "Unprocessable Entity");
+        assert_eq!(status_text(429), "Too Many Requests");
+        assert_eq!(status_text(500), "Internal Server Error");
+        assert_eq!(status_text(503), "Service Unavailable");
+    }
+
+    #[test]
+    fn status_text_unknown_does_not_return_ok() {
+        // Bug 5 regression: unknown codes must not claim to be "OK"
+        assert_ne!(status_text(418), "OK");
+        assert_ne!(status_text(599), "OK");
+    }
+}
+
 fn status_text(code: u16) -> &'static str {
     match code {
         200 => "OK",
         201 => "Created",
+        202 => "Accepted",
         204 => "No Content",
         301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
         500 => "Internal Server Error",
-        _ => "OK",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "Unknown",
     }
 }
