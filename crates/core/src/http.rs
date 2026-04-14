@@ -390,6 +390,7 @@ mod tests {
             timeout_ms: None,
             pre_request: None,
             post_request: None,
+            tags: None,
         };
 
         let response = HttpResponse {
@@ -429,6 +430,7 @@ mod tests {
             timeout_ms: None,
             pre_request: None,
             post_request: None,
+            tags: None,
         };
 
         let response = HttpResponse {

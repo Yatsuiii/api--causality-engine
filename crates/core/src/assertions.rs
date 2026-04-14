@@ -318,6 +318,7 @@ mod tests {
             body: None,
             header: None,
             response_time_ms: None,
+            body_type: None,
         }];
         let results = evaluate(&assertions, &response);
         assert_eq!(results.len(), 1);
@@ -332,6 +333,7 @@ mod tests {
             body: None,
             header: None,
             response_time_ms: None,
+            body_type: None,
         }];
         let results = evaluate(&assertions, &response);
         assert!(!results[0].passed);
@@ -353,6 +355,7 @@ mod tests {
             body: Some(body_checks),
             header: None,
             response_time_ms: None,
+            body_type: None,
         }];
         let results = evaluate(&assertions, &response);
         assert!(results[0].passed);
@@ -374,6 +377,7 @@ mod tests {
             body: Some(body_checks),
             header: None,
             response_time_ms: None,
+            body_type: None,
         }];
         let results = evaluate(&assertions, &response);
         assert!(results[0].passed);
@@ -395,6 +399,7 @@ mod tests {
             body: None,
             header: Some(header_checks),
             response_time_ms: None,
+            body_type: None,
         }];
         let results = evaluate(&assertions, &response);
         assert!(results[0].passed);
@@ -411,6 +416,7 @@ mod tests {
                 lt: Some(2000.0),
                 ..Default::default()
             }),
+            body_type: None,
         }];
         let results = evaluate(&assertions, &response);
         assert!(results[0].passed);
@@ -427,6 +433,7 @@ mod tests {
                 lt: Some(2000.0),
                 ..Default::default()
             }),
+            body_type: None,
         }];
         let results = evaluate(&assertions, &response);
         assert!(!results[0].passed);
