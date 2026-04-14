@@ -105,11 +105,19 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) -> Result<(), CliError> {
         );
     }
     if !collisions.is_empty() {
-        eprintln!("\n  {}", "warning: duplicate routes detected — only the first match is served:".yellow().bold());
+        eprintln!(
+            "\n  {}",
+            "warning: duplicate routes detected — only the first match is served:"
+                .yellow()
+                .bold()
+        );
         for c in &collisions {
             eprintln!("    {} {}", "•".yellow(), c);
         }
-        eprintln!("  {}", "Consider using unique paths or path parameters per step.".dimmed());
+        eprintln!(
+            "  {}",
+            "Consider using unique paths or path parameters per step.".dimmed()
+        );
     }
     println!("\n  {} Ctrl+C to stop\n", "Tip:".dimmed());
 
@@ -280,7 +288,10 @@ mod tests {
 
     #[test]
     fn extract_path_template_with_param() {
-        assert_eq!(extract_path("{{base_url}}/posts/{{post_id}}"), "/posts/{{post_id}}");
+        assert_eq!(
+            extract_path("{{base_url}}/posts/{{post_id}}"),
+            "/posts/{{post_id}}"
+        );
     }
 
     #[test]

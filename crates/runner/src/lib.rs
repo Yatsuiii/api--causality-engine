@@ -1325,13 +1325,7 @@ steps:
         let mut extract = HashMap::new();
         extract.insert("tok".to_string(), "token".to_string());
 
-        let result = extract_context(
-            &extract,
-            r#"{"token": "abc123"}"#,
-            &mut context,
-            0,
-            "step1",
-        );
+        let result = extract_context(&extract, r#"{"token": "abc123"}"#, &mut context, 0, "step1");
         assert!(result.is_ok());
         assert_eq!(context.get("tok").map(|s| s.as_str()), Some("abc123"));
     }

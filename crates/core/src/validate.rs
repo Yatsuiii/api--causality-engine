@@ -106,8 +106,7 @@ fn template_refs(s: &str) -> Vec<String> {
 
 /// Returns true for built-in dynamic variables that are always available.
 fn is_builtin(key: &str) -> bool {
-    matches!(key, "$uuid" | "$guid" | "$timestamp" | "$randomInt")
-        || key.starts_with("$env.")
+    matches!(key, "$uuid" | "$guid" | "$timestamp" | "$randomInt") || key.starts_with("$env.")
 }
 
 /// Collect all template references from a step's URL, headers, and body.
