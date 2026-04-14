@@ -1315,7 +1315,7 @@ steps:
             result
         );
         // Nothing should have been extracted
-        assert!(context.get("token").is_none());
+        assert!(!context.contains_key("token"));
     }
 
     // Bug 1 continuation: well-formed JSON still extracts correctly.
