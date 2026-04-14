@@ -10,6 +10,7 @@ use crate::jsonpath;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct AssertionResult {
     pub description: String,
     pub passed: bool,
