@@ -71,7 +71,7 @@ export default function TopBar({
             ⚡ ACE
           </span>
           <span className="text-[0.65rem] font-mono text-text-muted bg-bg-surface px-1.5 py-0.5 rounded">
-            v0.1.4
+            v0.1.5
           </span>
         </div>
 

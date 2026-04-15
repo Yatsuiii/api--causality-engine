@@ -1,6 +1,6 @@
 [package]
 name = "ace"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "API Causality Engine — stateful API workflow testing"
 authors = ["Yatsuiii"]

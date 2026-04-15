@@ -96,7 +96,19 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
     };
 
     let results = runner::run(&scenario, &config).await;
-    let has_failures = results.iter().any(|(log, r)| log.failed > 0 || r.is_err());
+    let has_assertion_failures = results.iter().any(|(log, r)| {
+        log.failed > 0 || matches!(r, Err(runner::RunError::AssertionFailed { .. }))
+    });
+    let has_engine_errors = results.iter().any(|(_, r)| {
+        matches!(
+            r,
+            Err(runner::RunError::HttpError { .. })
+                | Err(runner::RunError::MaxIterationsExceeded { .. })
+                | Err(runner::RunError::InvalidTransition { .. })
+                | Err(runner::RunError::NoMatchingTransition { .. })
+                | Err(runner::RunError::Skipped { .. })
+        )
+    });
 
     if !args.quiet {
         for (i, (log, _)) in results.iter().enumerate() {
@@ -125,7 +137,10 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
         }
     }
 
-    if has_failures {
+    if has_engine_errors {
+        return Err(CliError::RunError);
+    }
+    if has_assertion_failures {
         return Err(CliError::RunFailed);
     }
 
