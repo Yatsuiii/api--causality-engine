@@ -25,7 +25,7 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "API Causality Engine desktop",
