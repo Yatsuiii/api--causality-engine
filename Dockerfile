@@ -2,7 +2,7 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS planner
 WORKDIR /build
 COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+RUN cargo chef prepare --recipe-path recipe.json --package ace
 
 # ── Builder stage ─────────────────────────────────────────────────────────────
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS builder
