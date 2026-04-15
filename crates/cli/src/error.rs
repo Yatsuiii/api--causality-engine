@@ -15,8 +15,10 @@ pub enum CliError {
     JsonParse(serde_json::Error),
     /// Scenario validation found issues.
     Validation(Vec<String>),
-    /// One or more scenario steps failed at runtime.
+    /// One or more scenario steps failed at runtime (assertion failure).
     RunFailed,
+    /// One or more scenario steps encountered an engine/network error.
+    RunError,
     /// A user-supplied argument was invalid.
     BadArgument(String),
 }
@@ -35,6 +37,9 @@ impl fmt::Display for CliError {
                 Ok(())
             }
             CliError::RunFailed => write!(f, "One or more steps failed"),
+            CliError::RunError => {
+                write!(f, "One or more steps encountered a network or engine error")
+            }
             CliError::BadArgument(msg) => write!(f, "{}", msg),
         }
     }
@@ -47,6 +52,7 @@ impl CliError {
     pub fn exit_code(&self) -> i32 {
         match self {
             CliError::RunFailed => 1,
+            CliError::RunError => 2,
             _ => 2,
         }
     }

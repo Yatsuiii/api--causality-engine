@@ -1,5 +1,108 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
+
+// ---------------------------------------------------------------------------
+// Body-check flattening — allows both dot-notation and nested YAML for body
+// assertions and transition conditions:
+//
+//   # Flat (always worked):
+//   body:
+//     json.user.id: { eq: "abc" }
+//
+//   # Nested (now also works — flattened to dot notation):
+//   body:
+//     json:
+//       user:
+//         id: { eq: "abc" }
+//
+// Detection heuristic: if a YAML mapping has at least one key that is a known
+// ValueCheck operator (eq, ne, contains, exists, lt, gt, in, type) it is
+// treated as a ValueCheck leaf. Otherwise it is a nested path segment and its
+// children are recursed into.
+// ---------------------------------------------------------------------------
+
+const VALUE_CHECK_OPERATORS: &[&str] =
+    &["eq", "ne", "contains", "exists", "lt", "gt", "in", "type"];
+
+fn is_value_check_map(map: &serde_yaml::Mapping) -> bool {
+    map.keys().any(|k| {
+        k.as_str()
+            .map(|s| VALUE_CHECK_OPERATORS.contains(&s))
+            .unwrap_or(false)
+    })
+}
+
+fn flatten_body_map(
+    prefix: &str,
+    val: &serde_yaml::Value,
+    out: &mut HashMap<String, ValueCheck>,
+) -> Result<(), String> {
+    match val {
+        serde_yaml::Value::Mapping(map) if is_value_check_map(map) || prefix.is_empty() => {
+            // Leaf — deserialize as ValueCheck. If prefix is empty this is a
+            // top-level map that wasn't nested, so we let it fall through to
+            // the child-iteration branch below when it has no operator keys.
+            if is_value_check_map(map) {
+                let vc: ValueCheck =
+                    serde_yaml::from_value(val.clone()).map_err(|e| e.to_string())?;
+                if !prefix.is_empty() {
+                    out.insert(prefix.to_string(), vc);
+                    return Ok(());
+                }
+            }
+            // Fall through: top-level map with no operator keys → iterate children
+            for (k, v) in map {
+                let key = k
+                    .as_str()
+                    .ok_or_else(|| "body key is not a string".to_string())?;
+                let child_prefix = if prefix.is_empty() {
+                    key.to_string()
+                } else {
+                    format!("{}.{}", prefix, key)
+                };
+                flatten_body_map(&child_prefix, v, out)?;
+            }
+        }
+        serde_yaml::Value::Mapping(map) => {
+            // Nested path segment — recurse into children
+            for (k, v) in map {
+                let key = k
+                    .as_str()
+                    .ok_or_else(|| "body key is not a string".to_string())?;
+                let child_prefix = if prefix.is_empty() {
+                    key.to_string()
+                } else {
+                    format!("{}.{}", prefix, key)
+                };
+                flatten_body_map(&child_prefix, v, out)?;
+            }
+        }
+        _ => {
+            return Err(format!(
+                "body assertion at '{}' must be a mapping (e.g. {{ exists: true }})",
+                prefix
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn deserialize_body_checks<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, ValueCheck>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw: Option<serde_yaml::Value> = Option::deserialize(deserializer)?;
+    match raw {
+        None => Ok(None),
+        Some(val) => {
+            let mut map = HashMap::new();
+            flatten_body_map("", &val, &mut map).map_err(serde::de::Error::custom)?;
+            Ok(Some(map))
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Scenario — top-level YAML document
@@ -282,7 +385,7 @@ pub struct TransitionEdge {
 pub struct TransitionCondition {
     #[serde(default)]
     pub status: Option<StatusMatch>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_body_checks")]
     pub body: Option<HashMap<String, ValueCheck>>,
     #[serde(default)]
     pub assertions: Option<AssertionMatch>,
@@ -311,7 +414,7 @@ pub enum AssertionMatch {
 pub struct Assertion {
     #[serde(default)]
     pub status: Option<StatusCheck>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_body_checks")]
     pub body: Option<HashMap<String, ValueCheck>>,
     /// Assert the JSON type of the entire response body: "array", "object", "string", etc.
     #[serde(default)]
@@ -837,5 +940,118 @@ steps:
         assert_eq!(cond0.assertions, Some(AssertionMatch::Passed));
         let cond1 = edges[1].when.as_ref().unwrap();
         assert_eq!(cond1.assertions, Some(AssertionMatch::Failed));
+    }
+
+    // Bug regression: nested YAML body assertions should be flattened to dot-notation
+    // keys, not rejected with "unknown field" errors.
+    #[test]
+    fn nested_body_assertion_flattened_to_dot_notation() {
+        let yaml = r#"
+name: nested assertion test
+initial_state: start
+steps:
+  - name: check
+    method: POST
+    url: https://example.com/post
+    assert:
+      - status: 200
+      - body:
+          json:
+            user:
+              id: { exists: true }
+            tokens:
+              access: { eq: "tok_xyz" }
+    transition:
+      from: start
+      to: done
+"#;
+        // Should parse without error
+        let scenario = load_scenario(yaml).unwrap();
+        let body = scenario.steps[0].assertions.as_ref().unwrap()[1]
+            .body
+            .as_ref()
+            .unwrap();
+        assert!(
+            body.contains_key("json.user.id"),
+            "json.user.id should be flattened"
+        );
+        assert!(
+            body.contains_key("json.tokens.access"),
+            "json.tokens.access should be flattened"
+        );
+        assert_eq!(
+            body["json.tokens.access"].eq,
+            Some(serde_json::Value::String("tok_xyz".into()))
+        );
+    }
+
+    #[test]
+    fn flat_dot_notation_body_assertion_still_works() {
+        let yaml = r#"
+name: flat notation test
+initial_state: start
+steps:
+  - name: check
+    method: GET
+    url: https://example.com
+    assert:
+      - body:
+          json.user.id: { exists: true }
+          json.tokens.access: { eq: "tok_xyz" }
+    transition:
+      from: start
+      to: done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let body = scenario.steps[0].assertions.as_ref().unwrap()[0]
+            .body
+            .as_ref()
+            .unwrap();
+        assert!(body.contains_key("json.user.id"));
+        assert!(body.contains_key("json.tokens.access"));
+    }
+
+    #[test]
+    fn nested_body_assertion_in_transition_condition() {
+        let yaml = r#"
+name: condition test
+initial_state: start
+steps:
+  - name: poll
+    method: GET
+    url: https://example.com
+    assert:
+      - status: 200
+    transitions:
+      - to: done
+        when:
+          body:
+            result:
+              status: { eq: "complete" }
+      - to: poll
+        default: true
+  - name: done
+    method: GET
+    url: https://example.com
+    assert:
+      - status: 200
+    transitions:
+      - to: end
+        default: true
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let when = scenario.steps[0].transitions.as_ref().unwrap()[0]
+            .when
+            .as_ref()
+            .unwrap();
+        let body = when.body.as_ref().unwrap();
+        assert!(
+            body.contains_key("result.status"),
+            "result.status should be flattened"
+        );
+        assert_eq!(
+            body["result.status"].eq,
+            Some(serde_json::Value::String("complete".into()))
+        );
     }
 }

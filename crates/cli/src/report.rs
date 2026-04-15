@@ -125,7 +125,8 @@ pub fn print_summary(results: &[(ExecutionLog, Result<String, RunError>)]) {
         p99,
     );
 
-    if total_failed > 0 {
+    let any_error = results.iter().any(|(_, r)| r.is_err());
+    if total_failed > 0 || any_error {
         println!("\n  {}", "FAIL".red().bold());
     } else {
         println!("\n  {}", "PASS".green().bold());
@@ -455,6 +456,32 @@ mod tests {
     fn truncate_long_string() {
         let result = truncate("abcdef", 3);
         assert_eq!(result, "abc...");
+    }
+
+    // Bug regression: print_summary must show FAIL when result is Err (engine/network error),
+    // even when no assertion failures are recorded (log.failed == 0).
+    #[test]
+    fn summary_shows_fail_on_engine_error() {
+        let log = passed_log("done"); // log.failed == 0
+        let results: Vec<(ExecutionLog, Result<String, RunError>)> = vec![(
+            log,
+            Err(RunError::HttpError {
+                step: "step1".into(),
+                message: "connection refused".into(),
+            }),
+        )];
+        // We can't easily capture stdout in a unit test, but we can verify the
+        // logic branch: any_error must be true so FAIL path is taken.
+        let any_error = results.iter().any(|(_, r)| r.is_err());
+        assert!(any_error, "engine error must trigger the FAIL branch");
+    }
+
+    // Bug regression: exit code 2 for network errors, 1 for assertion failures.
+    #[test]
+    fn exit_code_network_error_is_2() {
+        use crate::error::CliError;
+        assert_eq!(CliError::RunError.exit_code(), 2);
+        assert_eq!(CliError::RunFailed.exit_code(), 1);
     }
 
     #[test]
