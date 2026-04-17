@@ -5,17 +5,22 @@
 [![Docker](https://img.shields.io/badge/ghcr.io-yatsuiii%2Face-blue?logo=docker)](https://github.com/Yatsuiii/api--causality-engine/pkgs/container/ace)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-API testing tool for workflows that span multiple requests. You write a YAML file describing the steps, what to assert, what to extract from each response, and how to move between states. ACE runs it.
+Workflow-first API validation engine for flows that span multiple requests. You write a YAML state graph describing each step, assertions, extracted values, and transitions. ACE validates it before execution and then runs it deterministically.
 
 No cloud account. No collections syncing to someone's server. Just a binary and a YAML file — or a desktop UI if you prefer clicking around.
 
 ## Why
 
-I kept reaching for Postman to test multi-step flows and it kept falling apart. Login, extract the token, use it in the next request, assert something about the response — that's not a collection, that's a workflow, and Postman treats it like an afterthought.
+Most API tools optimize for isolated requests. Production systems fail across request chains.
 
-So I built this. It's probably missing features you want. Open an issue.
+ACE treats API interactions as deterministic state-machine workflows:
 
-The core idea: steps are states in a graph. You define where each step goes on success (or failure), and ACE validates the whole graph before running a single request. No more "oh it failed on step 4 because step 2 silently skipped the extract".
+- Model each step as a state
+- Define explicit transition edges
+- Validate graph integrity and variable references before execution
+- Produce trace output that shows failure origin, not just failure symptom
+
+This is not a Postman replacement. It is a workflow validation and debugging engine designed for backend and CI/CD workflows.
 
 ## Install
 
@@ -51,7 +56,8 @@ ace run scenario.yaml              # run it
 ace run scenario.yaml -v           # show request/response bodies
 ace run scenario.yaml --env .env --var base_url=https://staging.api.com
 ace run scenario.yaml --junit report.xml   # JUnit output for CI
-ace validate scenario.yaml         # catch errors without running
+ace validate scenario.yaml         # catch graph/variable errors without running
+ace validate scenario.yaml --graph # print resolved state graph
 ace replay execution_log.json      # replay a previous run exactly
 ace report execution_log.json      # convert a run log to JSON or JUnit
 ace import collection.json         # convert a Postman collection to ACE YAML
@@ -293,6 +299,7 @@ The `examples/` directory has runnable scenarios:
 - `branching/` — conditional transitions based on response
 - `resilience/` — retry on failure, poll until ready
 - `workflows/` — CRUD lifecycle, first run scaffold
+- `workflows/login-create-retry.yaml` — login -> create -> retry branch -> verify
 
 ## License
 

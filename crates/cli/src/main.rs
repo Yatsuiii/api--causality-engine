@@ -81,6 +81,9 @@ enum Commands {
     Validate {
         /// Path to the scenario YAML file
         scenario: String,
+        /// Print the resolved state graph preview
+        #[arg(long, default_value_t = true)]
+        graph: bool,
     },
 
     /// Generate a report from an execution log
@@ -180,7 +183,7 @@ async fn main() {
             .await
         }
         Commands::Replay { log_file } => replay::cmd_replay(&log_file),
-        Commands::Validate { scenario } => validate::cmd_validate(&scenario),
+        Commands::Validate { scenario, graph } => validate::cmd_validate(&scenario, graph),
         Commands::Report {
             log_file,
             format,
