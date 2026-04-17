@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn evaluate_edges_uses_default_fallback() {
-        let edges = vec![Edge {
+        let edges = [Edge {
             from: "start".into(),
             to: "done".into(),
             when: None,
@@ -757,7 +757,7 @@ mod tests {
 
     #[test]
     fn evaluate_edges_matches_status_rule() {
-        let edges = vec![
+        let edges = [
             Edge {
                 from: "start".into(),
                 to: "retry".into(),
