@@ -16,6 +16,7 @@ pub struct RunArgs {
     pub junit: Option<String>,
     pub insecure: bool,
     pub proxy: Option<String>,
+    pub concurrency: Option<usize>,
 }
 
 pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
@@ -51,11 +52,25 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
         return Err(CliError::Validation(issues));
     }
 
+    // Back-compat: scenario-level `concurrency` is deprecated.
+    #[allow(deprecated)]
+    let legacy_scenario_concurrency = scenario.concurrency;
+    if legacy_scenario_concurrency.is_some() && !args.quiet {
+        eprintln!(
+            "{} `concurrency` in scenario YAML is deprecated and will be removed; use `--concurrency / -c` on the CLI instead",
+            "warning:".yellow().bold(),
+        );
+    }
+
+    let concurrency = args
+        .concurrency
+        .or(legacy_scenario_concurrency)
+        .unwrap_or(1);
+
     // Print header
     if !args.quiet {
         println!();
         println!("{} {}", "Scenario:".bold(), scenario.name.cyan());
-        let concurrency = scenario.concurrency.unwrap_or(1);
         println!(
             "{} {} user(s) × {} step(s)",
             "Running:".bold(),
@@ -93,6 +108,7 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
         verbose: args.verbose,
         insecure: args.insecure,
         proxy: args.proxy,
+        concurrency: Some(concurrency),
     };
 
     let results = runner::run(&scenario, &config).await;
@@ -106,6 +122,7 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
                 | Err(runner::RunError::MaxIterationsExceeded { .. })
                 | Err(runner::RunError::InvalidTransition { .. })
                 | Err(runner::RunError::NoMatchingTransition { .. })
+                | Err(runner::RunError::NoOutgoingEdges { .. })
                 | Err(runner::RunError::Skipped { .. })
         )
     });

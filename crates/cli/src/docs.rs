@@ -53,11 +53,7 @@ pub fn cmd_docs(path: &str, output: Option<String>) -> Result<(), CliError> {
         doc.push_str(&format!(
             "State: `{}` → `{}`\n\n",
             step.state_name(),
-            if next_states.is_empty() {
-                "terminal"
-            } else {
-                &next_states
-            },
+            if next_states.is_empty() { "<missing edge>" } else { &next_states },
         ));
 
         if let Some(headers) = &step.headers {

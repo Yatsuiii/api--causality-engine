@@ -164,11 +164,15 @@ auth:
 
 ## Branching
 
-Steps don't have to go in a straight line. Use `transitions` (plural) with `when:` conditions to branch based on what the response actually looks like:
+Steps don't have to go in a straight line. Define explicit top-level `edges` with `when:` conditions to branch based on what the response actually looks like:
 
 ```yaml
+name: login flow
+initial_state: login
+
 steps:
   - name: login
+    state: login
     method: POST
     url: "{{base_url}}/auth"
     body: { username: admin, password: "{{$env.PASS}}" }
@@ -176,18 +180,30 @@ steps:
       - status: 200
     extract:
       token: token
-    transitions:
-      - to: dashboard
-        when:
-          assertions: passed
-      - to: login_failed
-        default: true
 
   - name: login_failed
+    state: login_failed
     # handle it however you want, then go to error or retry
-    transitions:
-      - to: error
-        default: true
+
+  - name: dashboard
+    state: dashboard
+    method: GET
+    url: "{{base_url}}/me"
+
+edges:
+  - from: login
+    to: dashboard
+    when:
+      assertions: passed
+  - from: login
+    to: login_failed
+    default: true
+  - from: login_failed
+    to: error
+    default: true
+  - from: dashboard
+    to: done
+    default: true
 ```
 
 Polling loops work the same way — just transition back to an earlier step:
@@ -202,20 +218,23 @@ steps:
     state: check_status
     method: GET
     url: "{{base_url}}/jobs/{{job_id}}"
-    transitions:
-      - to: done
-        when:
-          assertions: passed
-      - to: wait_and_retry
-        default: true
 
   - name: wait and retry
     state: wait_and_retry
     pre_request:
       - delay_ms: 500
-    transitions:
-      - to: check_status
-        default: true
+
+edges:
+  - from: check_status
+    to: done
+    when:
+      assertions: passed
+  - from: check_status
+    to: wait_and_retry
+    default: true
+  - from: wait_and_retry
+    to: check_status
+    default: true
 ```
 
 ## Retry

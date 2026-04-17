@@ -9,6 +9,11 @@ pub fn validate_scenario(scenario: &Scenario) -> Vec<String> {
         return issues;
     }
 
+    let edges_declared = !scenario.edges.is_empty();
+    if !edges_declared {
+        issues.push("Scenario must declare at least one explicit edge".into());
+    }
+
     let mut step_names = HashSet::new();
     let mut step_states = HashSet::new();
 
@@ -38,6 +43,7 @@ pub fn validate_scenario(scenario: &Scenario) -> Vec<String> {
         }
     }
 
+    #[allow(deprecated)]
     if let Some(c) = scenario.concurrency
         && c == 0
     {
@@ -101,31 +107,33 @@ pub fn validate_scenario(scenario: &Scenario) -> Vec<String> {
     }
 
     for step in &scenario.steps {
-        if let Some(edges) = outgoing.get(step.state.as_str()) {
-            let has_default = edges.iter().any(|e| e.default.unwrap_or(false));
-            let all_conditional = edges.iter().all(|e| e.when.is_some());
-            if !has_default && all_conditional {
+        match outgoing.get(step.state.as_str()) {
+            Some(edges) => {
+                let has_default = edges.iter().any(|e| e.default.unwrap_or(false));
+                let all_conditional = edges.iter().all(|e| e.when.is_some());
+                if !has_default && all_conditional {
+                    issues.push(format!(
+                        "State '{}': no default edge — execution may fail if no condition matches",
+                        step.state
+                    ));
+                }
+            }
+            None if edges_declared => {
                 issues.push(format!(
-                    "State '{}': no default edge — execution may fail if no condition matches",
+                    "State '{}': missing outgoing edge — explicit graphs require every state to transition",
                     step.state
                 ));
             }
+            None => {}
         }
     }
 
     issues.extend(validate_variable_references(scenario));
 
-    let inferred_terminals: HashSet<String> = scenario
-        .steps
+    let inferred_terminals: HashSet<String> = incoming_targets
         .iter()
-        .filter(|step| !outgoing.contains_key(step.state.as_str()))
-        .map(|step| step.state.clone())
-        .chain(
-            incoming_targets
-                .iter()
-                .filter(|target| !state_set.contains(*target))
-                .cloned(),
-        )
+        .filter(|target| !state_set.contains(*target))
+        .cloned()
         .collect();
 
     let effective_terminals: HashSet<String> = if let Some(terminals) = &scenario.terminal_states {
@@ -176,13 +184,6 @@ pub fn render_state_graph(scenario: &Scenario) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!("initial_state: {}", scenario.initial_state));
     lines.push("mode: graph".to_string());
-
-    if scenario.edges.is_empty() {
-        for step in &scenario.steps {
-            lines.push(format!("[{}] --(terminal)--> [{}]", step.state, step.state));
-        }
-        return lines;
-    }
 
     for edge in &scenario.edges {
         let label = if edge.default.unwrap_or(false) {
@@ -372,5 +373,61 @@ edges:
                 .iter()
                 .any(|i| i.contains("starts from unknown state"))
         );
+    }
+
+    #[test]
+    fn empty_edges_does_not_cascade_per_step_errors() {
+        let yaml = r#"
+name: no edges
+initial_state: start
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+  - name: next
+    state: next
+    method: GET
+    url: http://example.com
+edges: []
+"#;
+
+        let scenario = load_scenario(yaml).unwrap();
+        let issues = validate_scenario(&scenario);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("at least one explicit edge"))
+        );
+        assert!(
+            !issues.iter().any(|i| i.contains("missing outgoing edge")),
+            "per-step missing-edge errors should not cascade when edges is empty; got: {:?}",
+            issues
+        );
+    }
+
+    #[test]
+    fn detects_missing_outgoing_edge() {
+        let yaml = r#"
+name: bad edge
+initial_state: start
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+  - name: next
+    state: next
+    method: GET
+    url: http://example.com
+edges:
+  - from: start
+    to: next
+    default: true
+"#;
+
+        let scenario = load_scenario(yaml).unwrap();
+        let issues = validate_scenario(&scenario);
+        assert!(issues.iter().any(|i| i.contains("missing outgoing edge")));
     }
 }

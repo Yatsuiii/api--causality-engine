@@ -126,7 +126,7 @@ export interface Scenario {
   name: string;
   initial_state: string;
   steps: Step[];
-  edges?: Edge[];
+  edges: Edge[];
   concurrency?: number;
   auth?: Auth;
   variables?: Record<string, string>;

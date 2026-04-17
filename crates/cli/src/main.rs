@@ -69,6 +69,10 @@ enum Commands {
         /// HTTP proxy (e.g. http://localhost:8080)
         #[arg(long)]
         proxy: Option<String>,
+
+        /// Number of parallel runs of the whole scenario (VUs)
+        #[arg(short = 'c', long)]
+        concurrency: Option<usize>,
     },
 
     /// Replay a previous execution from a JSON log
@@ -168,6 +172,7 @@ async fn main() {
             junit,
             insecure,
             proxy,
+            concurrency,
         } => {
             run::cmd_run(RunArgs {
                 scenario,
@@ -179,6 +184,7 @@ async fn main() {
                 junit,
                 insecure,
                 proxy,
+                concurrency,
             })
             .await
         }
