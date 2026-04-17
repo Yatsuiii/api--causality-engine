@@ -368,14 +368,9 @@ mod tests {
     fn extract_from_json_response() {
         let step = model::Step {
             name: "test".into(),
+            state: "a".into(),
             method: model::Method::Get,
             url: "http://example.com".into(),
-            transition: Some(model::Transition {
-                from: "a".into(),
-                to: "b".into(),
-            }),
-            transitions: None,
-            state: None,
             headers: None,
             body: None,
             multipart: None,
@@ -409,14 +404,9 @@ mod tests {
     fn extract_missing_path_is_skipped() {
         let step = model::Step {
             name: "test".into(),
+            state: "a".into(),
             method: model::Method::Get,
             url: "http://example.com".into(),
-            transition: Some(model::Transition {
-                from: "a".into(),
-                to: "b".into(),
-            }),
-            transitions: None,
-            state: None,
             headers: None,
             body: None,
             multipart: None,

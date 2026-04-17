@@ -5,6 +5,7 @@ variables:
 steps:
   # --- Folder: Auth ---
   - name: Login
+    state: start
     method: POST
     url: "{{base_url}}/posts"
     tags: [Auth]
@@ -30,11 +31,9 @@ steps:
       - set:
           email: "test@example.com"
           password: "hunter2"
-    transition:
-      from: start
-      to: login
   # --- Folder: User ---
   - name: Get User Profile
+    state: login
     method: GET
     url: "{{base_url}}/posts/{{user_id}}"
     tags: [User]
@@ -48,10 +47,8 @@ steps:
             exists: true
       - response_time_ms:
           lt: 500
-    transition:
-      from: login
-      to: get_user_profile
   - name: Update User Profile
+    state: get_user_profile
     method: PUT
     url: "{{base_url}}/posts/{{user_id}}"
     tags: [User]
@@ -71,11 +68,9 @@ steps:
       - body:
           title:
             eq: "Updated Profile"
-    transition:
-      from: get_user_profile
-      to: update_user_profile
   # --- Folder: Posts ---
   - name: Get All Posts
+    state: update_user_profile
     method: GET
     url: "{{base_url}}/posts?userId={{user_id}}"
     tags: [Posts]
@@ -86,10 +81,8 @@ steps:
       - body_type: array
     extract:
       first_post_id: "[0].id"
-    transition:
-      from: update_user_profile
-      to: get_all_posts
   - name: Get Post Comments
+    state: get_all_posts
     method: GET
     url: "{{base_url}}/posts/{{first_post_id}}/comments"
     tags: [Posts]
@@ -98,6 +91,19 @@ steps:
     assert:
       - status: 200
       - body_type: array
-    transition:
-      from: get_all_posts
-      to: done
+edges:
+  - from: start
+    to: login
+    default: true
+  - from: login
+    to: get_user_profile
+    default: true
+  - from: get_user_profile
+    to: update_user_profile
+    default: true
+  - from: update_user_profile
+    to: get_all_posts
+    default: true
+  - from: get_all_posts
+    to: done
+    default: true

@@ -10,6 +10,7 @@ variables:
 
 steps:
   - name: create post
+    state: create_post
     method: POST
     url: "{{base_url}}/posts"
     headers:
@@ -25,11 +26,9 @@ steps:
             exists: true
     extract:
       post_id: "id"
-    transition:
-      from: create_post
-      to: fetch_post
 
   - name: fetch post
+    state: fetch_post
     method: GET
     url: "{{base_url}}/posts/{{post_id}}"
     assert:
@@ -37,6 +36,10 @@ steps:
       - body:
           userId:
             exists: true
-    transition:
-      from: fetch_post
-      to: done
+edges:
+  - from: create_post
+    to: fetch_post
+    default: true
+  - from: fetch_post
+    to: done
+    default: true

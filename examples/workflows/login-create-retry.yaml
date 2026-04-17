@@ -1,0 +1,109 @@
+name: login create resource with retry
+initial_state: login
+max_iterations: 8
+
+variables:
+  base_url: https://api.example.com
+  username: demo-user
+  password: "{{$env.DEMO_PASSWORD}}"
+
+steps:
+  - name: login
+    state: login
+    method: POST
+    url: "{{base_url}}/auth/login"
+    headers:
+      Content-Type: application/json
+    body:
+      username: "{{username}}"
+      password: "{{password}}"
+    assert:
+      - status: 200
+      - body:
+          token:
+            exists: true
+    extract:
+      token: token
+
+  - name: create_resource
+    state: create_resource
+    method: POST
+    url: "{{base_url}}/resources"
+    headers:
+      Content-Type: application/json
+      Authorization: "Bearer {{token}}"
+    body:
+      name: "order-{{$timestamp}}"
+      type: "demo"
+    assert:
+      - status:
+          in: [201, 202]
+      - body:
+          id:
+            exists: true
+    extract:
+      resource_id: id
+
+  - name: create_retry_wait
+    state: create_retry_wait
+    method: GET
+    url: "{{base_url}}/health"
+    pre_request:
+      - delay_ms: 800
+
+  - name: verify_resource
+    state: verify_resource
+    method: GET
+    url: "{{base_url}}/resources/{{resource_id}}"
+    headers:
+      Authorization: "Bearer {{token}}"
+    assert:
+      - status: 200
+      - body:
+          id:
+            exists: true
+          status:
+            in: ["ready", "active"]
+
+  - name: verify_retry_wait
+    state: verify_retry_wait
+    method: GET
+    url: "{{base_url}}/health"
+    pre_request:
+      - delay_ms: 1000
+
+  - name: auth_failed
+    state: auth_failed
+    method: GET
+    url: "{{base_url}}/health"
+edges:
+  - from: login
+    to: create_resource
+    when:
+      assertions: passed
+  - from: login
+    to: auth_failed
+    default: true
+  - from: create_resource
+    to: verify_resource
+    when:
+      assertions: passed
+  - from: create_resource
+    to: create_retry_wait
+    default: true
+  - from: create_retry_wait
+    to: create_resource
+    default: true
+  - from: verify_resource
+    to: done
+    when:
+      assertions: passed
+  - from: verify_resource
+    to: verify_retry_wait
+    default: true
+  - from: verify_retry_wait
+    to: verify_resource
+    default: true
+  - from: auth_failed
+    to: error
+    default: true

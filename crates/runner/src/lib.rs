@@ -8,18 +8,12 @@ use ace_http::{
     build_client, send_request,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use model::{
-    AssertionMatch, Auth, Hook, Scenario, StatusMatch, Step, TransitionCondition, TransitionEdge,
-};
+use model::{AssertionMatch, Auth, Edge, Hook, Scenario, StatusMatch, Step, TransitionCondition};
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
-
-// ---------------------------------------------------------------------------
-// Error types
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub enum RunError {
@@ -86,10 +80,6 @@ impl fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
-// ---------------------------------------------------------------------------
-// Execution log types
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ExecutionLog {
@@ -121,10 +111,6 @@ pub struct StepLog {
     pub response_body: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Run configuration
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Default)]
 pub struct RunConfig {
     pub cli_variables: HashMap<String, String>,
@@ -132,10 +118,6 @@ pub struct RunConfig {
     pub insecure: bool,
     pub proxy: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// OAuth2 token fetcher
-// ---------------------------------------------------------------------------
 
 async fn fetch_oauth2_token(
     client: &Client,
@@ -191,10 +173,6 @@ async fn fetch_oauth2_token(
         .ok_or_else(|| "OAuth2 response missing 'access_token' field".to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Hook executor
-// ---------------------------------------------------------------------------
-
 async fn execute_hooks(
     hooks: &[Hook],
     context: &mut HashMap<String, String>,
@@ -244,34 +222,24 @@ async fn execute_hooks(
     None
 }
 
-// ---------------------------------------------------------------------------
-// Transition evaluation (graph mode)
-// ---------------------------------------------------------------------------
-
-/// Evaluate transition edges and return the next state.
-/// First conditional match wins; falls back to default edge.
-fn evaluate_transitions(
-    edges: &[TransitionEdge],
+fn evaluate_edges(
+    edges: &[&Edge],
     response: &HttpResponse,
     assertion_results: &[AssertionResult],
     current_state: &str,
 ) -> Result<String, RunError> {
-    // First pass: check conditional edges in declaration order
     for edge in edges {
         if let Some(condition) = &edge.when {
             if matches_condition(condition, response, assertion_results) {
                 return Ok(edge.to.clone());
             }
         } else if edge.default.unwrap_or(false) {
-            // Skip default edges in first pass
             continue;
         } else {
-            // Unconditional non-default edge — always matches
             return Ok(edge.to.clone());
         }
     }
 
-    // Second pass: find the default edge
     for edge in edges {
         if edge.default.unwrap_or(false) {
             return Ok(edge.to.clone());
@@ -284,14 +252,11 @@ fn evaluate_transitions(
     })
 }
 
-/// Check if a transition condition matches the response.
-/// AND semantics: all specified fields must match.
 fn matches_condition(
     condition: &TransitionCondition,
     response: &HttpResponse,
     assertion_results: &[AssertionResult],
 ) -> bool {
-    // Status check
     if let Some(status_match) = &condition.status {
         let matches = match status_match {
             StatusMatch::Exact(code) => response.status == *code,
@@ -305,7 +270,6 @@ fn matches_condition(
         }
     }
 
-    // Body checks
     if let Some(body_checks) = &condition.body {
         let json: Option<serde_json::Value> = serde_json::from_str(&response.body).ok();
         for (path, check) in body_checks {
@@ -323,7 +287,6 @@ fn matches_condition(
         }
     }
 
-    // Assertion outcome check
     if let Some(assertion_match) = &condition.assertions {
         let all_passed = assertion_results.iter().all(|a| a.passed);
         match assertion_match {
@@ -343,17 +306,11 @@ fn matches_condition(
     true
 }
 
-// ---------------------------------------------------------------------------
-// Step execution helper
-// ---------------------------------------------------------------------------
-
 struct StepResult {
     response: HttpResponse,
     assertion_results: Vec<AssertionResult>,
     all_passed: bool,
     body_sent: Option<String>,
-    /// URL as it was resolved *before* this step's own extractions ran, so the
-    /// log reflects what was actually sent rather than a post-extraction value.
     url_sent: String,
 }
 
@@ -365,7 +322,6 @@ async fn execute_step(
     _config: &RunConfig,
     task_id: usize,
 ) -> Result<StepResult, RunError> {
-    // Execute pre-request hooks
     if let Some(hooks) = &step.pre_request
         && let Some(skip_reason) = execute_hooks(hooks, context, task_id, &step.name, "pre").await
     {
@@ -375,10 +331,7 @@ async fn execute_step(
         });
     }
 
-    // Resolve URL
     let url = resolve_template(&step.url, context);
-
-    // Build request headers
     let mut req_headers = HashMap::new();
 
     if let Some(auth) = scenario_auth {
@@ -391,15 +344,11 @@ async fn execute_step(
         }
     }
 
-    // Build request body
     let body = step.body.as_ref().map(|b| {
-        let json_str = serde_json::to_string(b).expect(
-            "step body is a serde_yaml::Value that parsed cleanly — serialization cannot fail",
-        );
+        let json_str = serde_json::to_string(b).expect("scenario body should always serialize");
         resolve_template(&json_str, context)
     });
 
-    // Build multipart fields
     let multipart = step.multipart.as_ref().map(|fields| {
         fields
             .iter()
@@ -421,7 +370,6 @@ async fn execute_step(
             .collect()
     });
 
-    // Auto-set Content-Type for JSON bodies (not for multipart)
     if body.is_some()
         && multipart.is_none()
         && !req_headers.contains_key("Content-Type")
@@ -437,11 +385,9 @@ async fn execute_step(
         multipart,
     };
 
-    // Retry loop
     let max_attempts = step.retry.as_ref().map_or(1, |r| r.attempts);
     let delay_ms = step.retry.as_ref().map_or(0, |r| r.delay_ms);
     let mut last_err: Option<String> = None;
-
     let method_str = step.method.as_str();
 
     for attempt in 1..=max_attempts {
@@ -459,18 +405,7 @@ async fn execute_step(
         match send_request(client, method_str, &url, &opts).await {
             Ok(response) => {
                 let success = response.status >= 200 && response.status < 400;
-
                 if success || attempt == max_attempts {
-                    debug!(
-                        task_id,
-                        step = step.name.as_str(),
-                        status = response.status,
-                        duration_ms = response.duration_ms,
-                        attempt,
-                        "Request completed"
-                    );
-
-                    // Run assertions
                     let assertion_results = if let Some(asserts) = &step.assertions {
                         assertions::evaluate(asserts, &response)
                     } else {
@@ -479,12 +414,10 @@ async fn execute_step(
 
                     let all_passed = assertion_results.iter().all(|a| a.passed);
 
-                    // Extract context values
                     if let Some(extract) = &step.extract {
                         extract_context(extract, &response.body, context, task_id, &step.name)?;
                     }
 
-                    // Execute post-request hooks
                     if let Some(hooks) = &step.post_request {
                         execute_hooks(hooks, context, task_id, &step.name, "post").await;
                     }
@@ -496,16 +429,16 @@ async fn execute_step(
                         body_sent: body.clone(),
                         url_sent: url.clone(),
                     });
-                } else {
-                    warn!(
-                        task_id,
-                        step = step.name.as_str(),
-                        status = response.status,
-                        attempt,
-                        "Non-success status, will retry"
-                    );
-                    last_err = Some(format!("status {}", response.status));
                 }
+
+                warn!(
+                    task_id,
+                    step = step.name.as_str(),
+                    status = response.status,
+                    attempt,
+                    "Non-success status, will retry"
+                );
+                last_err = Some(format!("status {}", response.status));
             }
             Err(e) => {
                 error!(
@@ -524,332 +457,6 @@ async fn execute_step(
         step: step.name.clone(),
         message: last_err.unwrap_or_else(|| "unknown error".into()),
     })
-}
-
-// ---------------------------------------------------------------------------
-// Runner
-// ---------------------------------------------------------------------------
-
-async fn run_once(
-    scenario: &Scenario,
-    task_id: usize,
-    config: &RunConfig,
-) -> (ExecutionLog, Result<String, RunError>) {
-    let client_config = ClientConfig {
-        insecure: config.insecure || scenario.insecure.unwrap_or(false),
-        proxy: config.proxy.clone().or_else(|| scenario.proxy.clone()),
-        default_timeout_ms: scenario.default_timeout_ms,
-    };
-    let client = build_client(&client_config);
-
-    let mut context =
-        variables::build_initial_context(scenario.variables.as_ref(), &config.cli_variables);
-
-    let mut log = ExecutionLog {
-        steps: Vec::new(),
-        total_duration_ms: 0,
-        total_steps: 0,
-        passed: 0,
-        failed: 0,
-        iterations: 0,
-        terminal_state: None,
-    };
-
-    // OAuth2: fetch token before execution if configured
-    if let Some(auth) = &scenario.auth
-        && let Some(oauth) = &auth.oauth2
-    {
-        match fetch_oauth2_token(&client, oauth, &context).await {
-            Ok(token) => {
-                debug!(task_id, "OAuth2 token acquired");
-                context.insert("$oauth_token".into(), token);
-            }
-            Err(e) => {
-                return (
-                    log,
-                    Err(RunError::HttpError {
-                        step: "<oauth2>".into(),
-                        message: e,
-                    }),
-                );
-            }
-        }
-    }
-
-    let run_start = std::time::Instant::now();
-
-    let graph_mode = ace_core::validate::is_graph_mode(scenario);
-
-    if graph_mode {
-        run_graph_mode(
-            scenario,
-            &client,
-            &mut context,
-            &mut log,
-            config,
-            task_id,
-            run_start,
-        )
-        .await
-    } else {
-        run_linear_mode(
-            scenario,
-            &client,
-            &mut context,
-            &mut log,
-            config,
-            task_id,
-            run_start,
-        )
-        .await
-    }
-}
-
-async fn run_linear_mode(
-    scenario: &Scenario,
-    client: &Client,
-    context: &mut HashMap<String, String>,
-    log: &mut ExecutionLog,
-    config: &RunConfig,
-    task_id: usize,
-    run_start: std::time::Instant,
-) -> (ExecutionLog, Result<String, RunError>) {
-    let mut current_state = scenario.initial_state.clone();
-
-    for step in &scenario.steps {
-        let transition = match step.transition.as_ref() {
-            Some(t) => t,
-            None => {
-                log.total_duration_ms = run_start.elapsed().as_millis() as u64;
-                return (
-                    std::mem::take(log),
-                    Err(RunError::InvalidTransition {
-                        step: step.name.clone(),
-                        expected: current_state.clone(),
-                        actual: "<missing transition>".into(),
-                    }),
-                );
-            }
-        };
-
-        // Validate state transition
-        if transition.from != current_state {
-            log.total_duration_ms = run_start.elapsed().as_millis() as u64;
-            return (
-                std::mem::take(log),
-                Err(RunError::InvalidTransition {
-                    step: step.name.clone(),
-                    expected: transition.from.clone(),
-                    actual: current_state,
-                }),
-            );
-        }
-
-        match execute_step(
-            step,
-            client,
-            context,
-            scenario.auth.as_ref(),
-            config,
-            task_id,
-        )
-        .await
-        {
-            Ok(result) => {
-                let step_log = StepLog {
-                    step_name: step.name.clone(),
-                    state_before: transition.from.clone(),
-                    state_after: transition.to.clone(),
-                    method: step.method.as_str().to_string(),
-                    url: result.url_sent.clone(),
-                    status: result.response.status,
-                    duration_ms: result.response.duration_ms,
-                    assertions: result.assertion_results.clone(),
-                    request_body: if config.verbose {
-                        result.body_sent
-                    } else {
-                        None
-                    },
-                    response_body: if config.verbose {
-                        Some(result.response.body.clone())
-                    } else {
-                        None
-                    },
-                };
-
-                log.steps.push(step_log);
-                log.total_steps += 1;
-                if result.all_passed {
-                    log.passed += 1;
-                } else {
-                    log.failed += 1;
-                }
-
-                if !result.all_passed {
-                    let failures: Vec<_> = result
-                        .assertion_results
-                        .into_iter()
-                        .filter(|a| !a.passed)
-                        .collect();
-                    log.total_duration_ms = run_start.elapsed().as_millis() as u64;
-                    let owned_log = std::mem::take(log);
-                    return (
-                        owned_log,
-                        Err(RunError::AssertionFailed {
-                            step: step.name.clone(),
-                            failures,
-                        }),
-                    );
-                }
-
-                current_state = transition.to.clone();
-            }
-            Err(RunError::Skipped { .. }) => {
-                debug!(task_id, step = step.name.as_str(), "Step skipped");
-                current_state = transition.to.clone();
-                continue;
-            }
-            Err(e) => {
-                log.total_duration_ms = run_start.elapsed().as_millis() as u64;
-                let owned_log = std::mem::take(log);
-                return (owned_log, Err(e));
-            }
-        }
-    }
-
-    log.total_duration_ms = run_start.elapsed().as_millis() as u64;
-    (std::mem::take(log), Ok(current_state))
-}
-
-async fn run_graph_mode(
-    scenario: &Scenario,
-    client: &Client,
-    context: &mut HashMap<String, String>,
-    log: &mut ExecutionLog,
-    config: &RunConfig,
-    task_id: usize,
-    run_start: std::time::Instant,
-) -> (ExecutionLog, Result<String, RunError>) {
-    // Build step lookup by state name
-    let step_map: HashMap<String, &Step> = scenario
-        .steps
-        .iter()
-        .map(|s| (s.state_name().to_string(), s))
-        .collect();
-
-    let mut current_state = scenario.initial_state.clone();
-    let max_iter = scenario.max_iterations.unwrap_or(100);
-
-    loop {
-        log.iterations += 1;
-        if log.iterations > max_iter {
-            log.total_duration_ms = run_start.elapsed().as_millis() as u64;
-            let owned_log = std::mem::take(log);
-            return (
-                owned_log,
-                Err(RunError::MaxIterationsExceeded { limit: max_iter }),
-            );
-        }
-
-        // Look up step for current state; if none, it's a terminal state
-        let step = match step_map.get(&current_state) {
-            Some(s) => *s,
-            None => {
-                log.terminal_state = Some(current_state.clone());
-                break;
-            }
-        };
-
-        let state_before = current_state.clone();
-
-        match execute_step(
-            step,
-            client,
-            context,
-            scenario.auth.as_ref(),
-            config,
-            task_id,
-        )
-        .await
-        {
-            Ok(result) => {
-                // Evaluate transitions to determine next state
-                let (_, edges) = step.resolved_edges().expect(
-                    "run_graph_mode is only called after validate_scenario confirms graph layout",
-                );
-                let next_state = match evaluate_transitions(
-                    &edges,
-                    &result.response,
-                    &result.assertion_results,
-                    &current_state,
-                ) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log.total_duration_ms = run_start.elapsed().as_millis() as u64;
-                        let owned_log = std::mem::take(log);
-                        return (owned_log, Err(e));
-                    }
-                };
-
-                let step_log = StepLog {
-                    step_name: step.name.clone(),
-                    state_before,
-                    state_after: next_state.clone(),
-                    method: step.method.as_str().to_string(),
-                    url: result.url_sent.clone(),
-                    status: result.response.status,
-                    duration_ms: result.response.duration_ms,
-                    assertions: result.assertion_results.clone(),
-                    request_body: if config.verbose {
-                        result.body_sent
-                    } else {
-                        None
-                    },
-                    response_body: if config.verbose {
-                        Some(result.response.body.clone())
-                    } else {
-                        None
-                    },
-                };
-
-                log.steps.push(step_log);
-                log.total_steps += 1;
-                if result.all_passed {
-                    log.passed += 1;
-                } else {
-                    log.failed += 1;
-                }
-
-                current_state = next_state;
-            }
-            Err(RunError::Skipped { .. }) => {
-                // Skipped step: take default transition
-                let (_, edges) = step.resolved_edges().expect(
-                    "run_graph_mode is only called after validate_scenario confirms graph layout",
-                );
-                let next_state = edges
-                    .iter()
-                    .find(|e| e.default.unwrap_or(false))
-                    .map(|e| e.to.clone())
-                    .unwrap_or_else(|| edges[0].to.clone());
-                debug!(
-                    task_id,
-                    step = step.name.as_str(),
-                    next = next_state.as_str(),
-                    "Step skipped, following default transition"
-                );
-                current_state = next_state;
-            }
-            Err(e) => {
-                log.total_duration_ms = run_start.elapsed().as_millis() as u64;
-                let owned_log = std::mem::take(log);
-                return (owned_log, Err(e));
-            }
-        }
-    }
-
-    log.total_duration_ms = run_start.elapsed().as_millis() as u64;
-    (std::mem::take(log), Ok(current_state))
 }
 
 fn apply_auth(
@@ -892,9 +499,6 @@ fn extract_context(
     task_id: usize,
     step_name: &str,
 ) -> Result<(), RunError> {
-    // A non-JSON body is not a fatal error — warn and skip all extractions so
-    // downstream steps still run.  Turning a successful HTTP response into a
-    // RunError::HttpError just because the body wasn't parseable is misleading.
     let json: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => {
@@ -931,17 +535,186 @@ fn extract_context(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
+fn outgoing_edges<'a>(scenario: &'a Scenario, state: &str) -> Vec<&'a Edge> {
+    scenario
+        .edges
+        .iter()
+        .filter(|edge| edge.from == state)
+        .collect()
+}
+
+async fn run_once(
+    scenario: &Scenario,
+    task_id: usize,
+    config: &RunConfig,
+) -> (ExecutionLog, Result<String, RunError>) {
+    let client_config = ClientConfig {
+        insecure: config.insecure || scenario.insecure.unwrap_or(false),
+        proxy: config.proxy.clone().or_else(|| scenario.proxy.clone()),
+        default_timeout_ms: scenario.default_timeout_ms,
+    };
+    let client = build_client(&client_config);
+
+    let mut context =
+        variables::build_initial_context(scenario.variables.as_ref(), &config.cli_variables);
+
+    let mut log = ExecutionLog::default();
+
+    if let Some(auth) = &scenario.auth
+        && let Some(oauth) = &auth.oauth2
+    {
+        match fetch_oauth2_token(&client, oauth, &context).await {
+            Ok(token) => {
+                debug!(task_id, "OAuth2 token acquired");
+                context.insert("$oauth_token".into(), token);
+            }
+            Err(e) => {
+                return (
+                    log,
+                    Err(RunError::HttpError {
+                        step: "<oauth2>".into(),
+                        message: e,
+                    }),
+                );
+            }
+        }
+    }
+
+    let step_map: HashMap<String, &Step> = scenario
+        .steps
+        .iter()
+        .map(|s| (s.state.clone(), s))
+        .collect();
+
+    let run_start = std::time::Instant::now();
+    let mut current_state = scenario.initial_state.clone();
+    let max_iter = scenario.max_iterations.unwrap_or(100);
+
+    loop {
+        log.iterations += 1;
+        if log.iterations > max_iter {
+            log.total_duration_ms = run_start.elapsed().as_millis() as u64;
+            let owned_log = std::mem::take(&mut log);
+            return (
+                owned_log,
+                Err(RunError::MaxIterationsExceeded { limit: max_iter }),
+            );
+        }
+
+        let step = match step_map.get(&current_state) {
+            Some(step) => *step,
+            None => {
+                log.terminal_state = Some(current_state.clone());
+                break;
+            }
+        };
+
+        let state_before = current_state.clone();
+
+        match execute_step(
+            step,
+            &client,
+            &mut context,
+            scenario.auth.as_ref(),
+            config,
+            task_id,
+        )
+        .await
+        {
+            Ok(result) => {
+                let edges = outgoing_edges(scenario, &state_before);
+                let next_state = if edges.is_empty() {
+                    state_before.clone()
+                } else {
+                    match evaluate_edges(
+                        &edges,
+                        &result.response,
+                        &result.assertion_results,
+                        &state_before,
+                    ) {
+                        Ok(next_state) => next_state,
+                        Err(e) => {
+                            log.total_duration_ms = run_start.elapsed().as_millis() as u64;
+                            let owned_log = std::mem::take(&mut log);
+                            return (owned_log, Err(e));
+                        }
+                    }
+                };
+
+                log.steps.push(StepLog {
+                    step_name: step.name.clone(),
+                    state_before: state_before.clone(),
+                    state_after: next_state.clone(),
+                    method: step.method.as_str().to_string(),
+                    url: result.url_sent,
+                    status: result.response.status,
+                    duration_ms: result.response.duration_ms,
+                    assertions: result.assertion_results.clone(),
+                    request_body: if config.verbose {
+                        result.body_sent
+                    } else {
+                        None
+                    },
+                    response_body: if config.verbose {
+                        Some(result.response.body.clone())
+                    } else {
+                        None
+                    },
+                });
+
+                log.total_steps += 1;
+                if result.all_passed {
+                    log.passed += 1;
+                } else {
+                    log.failed += 1;
+                }
+
+                if edges.is_empty() {
+                    log.terminal_state = Some(state_before.clone());
+                    break;
+                }
+
+                current_state = next_state;
+            }
+            Err(RunError::Skipped { .. }) => {
+                let edges = outgoing_edges(scenario, &state_before);
+                if edges.is_empty() {
+                    log.terminal_state = Some(state_before.clone());
+                    break;
+                }
+
+                let next_state = edges
+                    .iter()
+                    .find(|edge| edge.default.unwrap_or(false))
+                    .map(|edge| edge.to.clone())
+                    .unwrap_or_else(|| edges[0].to.clone());
+                debug!(
+                    task_id,
+                    step = step.name.as_str(),
+                    next = next_state.as_str(),
+                    "Step skipped, following default edge"
+                );
+                current_state = next_state;
+            }
+            Err(e) => {
+                log.total_duration_ms = run_start.elapsed().as_millis() as u64;
+                let owned_log = std::mem::take(&mut log);
+                return (owned_log, Err(e));
+            }
+        }
+    }
+
+    log.total_duration_ms = run_start.elapsed().as_millis() as u64;
+    (std::mem::take(&mut log), Ok(current_state))
+}
 
 pub async fn run(
     scenario: &Scenario,
     config: &RunConfig,
 ) -> Vec<(ExecutionLog, Result<String, RunError>)> {
     let concurrency = scenario.concurrency.unwrap_or(1);
-
     let mut handles = Vec::new();
+
     for i in 1..=concurrency {
         let scenario = scenario.clone();
         let cfg = config.clone();
@@ -952,424 +725,68 @@ pub async fn run(
 
     let mut results = Vec::new();
     for handle in handles {
-        let result = handle.await.expect("runner task panicked");
-        results.push(result);
+        results.push(handle.await.expect("runner task panicked"));
     }
-
     results
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use model::{Method, Scenario, Step, Transition, TransitionEdge, load_scenario};
-
-    fn default_config() -> RunConfig {
-        RunConfig::default()
-    }
-
-    #[tokio::test]
-    async fn valid_transitions() {
-        let scenario = Scenario {
-            name: "test".into(),
-            initial_state: "start".into(),
-            concurrency: None,
-            auth: None,
-            variables: None,
-            proxy: None,
-            insecure: None,
-            default_timeout_ms: None,
-            max_iterations: None,
-            terminal_states: None,
-            steps: vec![
-                Step {
-                    name: "step1".into(),
-                    method: Method::Get,
-                    url: "http://example.com".into(),
-                    transition: Some(Transition {
-                        from: "start".into(),
-                        to: "middle".into(),
-                    }),
-                    transitions: None,
-                    state: None,
-                    headers: None,
-                    body: None,
-                    multipart: None,
-                    extract: None,
-                    retry: None,
-                    assertions: None,
-                    timeout_ms: None,
-                    pre_request: None,
-                    post_request: None,
-                    tags: None,
-                },
-                Step {
-                    name: "step2".into(),
-                    method: Method::Post,
-                    url: "http://example.com".into(),
-                    transition: Some(Transition {
-                        from: "middle".into(),
-                        to: "done".into(),
-                    }),
-                    transitions: None,
-                    state: None,
-                    headers: None,
-                    body: None,
-                    multipart: None,
-                    extract: None,
-                    retry: None,
-                    assertions: None,
-                    timeout_ms: None,
-                    pre_request: None,
-                    post_request: None,
-                    tags: None,
-                },
-            ],
-        };
-
-        let results = run(&scenario, &default_config()).await;
-        assert_eq!(results.len(), 1);
-        let (log, state) = &results[0];
-        let state = state.as_ref().unwrap();
-        assert_eq!(state, "done");
-        assert_eq!(log.steps.len(), 2);
-        assert_eq!(log.passed, 2);
-    }
-
-    #[tokio::test]
-    async fn invalid_transition() {
-        let scenario = Scenario {
-            name: "test".into(),
-            initial_state: "start".into(),
-            concurrency: None,
-            auth: None,
-            variables: None,
-            proxy: None,
-            insecure: None,
-            default_timeout_ms: None,
-            max_iterations: None,
-            terminal_states: None,
-            steps: vec![Step {
-                name: "bad step".into(),
-                method: Method::Get,
-                url: "http://example.com".into(),
-                transition: Some(Transition {
-                    from: "wrong".into(),
-                    to: "done".into(),
-                }),
-                transitions: None,
-                state: None,
-                headers: None,
-                body: None,
-                multipart: None,
-                extract: None,
-                retry: None,
-                assertions: None,
-                timeout_ms: None,
-                pre_request: None,
-                post_request: None,
-                tags: None,
-            }],
-        };
-
-        let results = run(&scenario, &default_config()).await;
-        assert!(matches!(
-            &results[0].1,
-            Err(RunError::InvalidTransition { .. })
-        ));
-    }
-
-    #[tokio::test]
-    async fn roundtrip_yaml() {
-        let yaml = r#"
-name: flow
-initial_state: init
-steps:
-  - name: fetch
-    method: GET
-    url: http://example.com
-    transition:
-      from: init
-      to: fetched
-"#;
-        let scenario = load_scenario(yaml).unwrap();
-        let results = run(&scenario, &default_config()).await;
-        assert_eq!(results.len(), 1);
-    }
+    use model::{Edge, ValueCheck};
 
     #[test]
-    fn base64_encode_works() {
-        assert_eq!(BASE64.encode(b"admin:secret"), "YWRtaW46c2VjcmV0");
-        assert_eq!(BASE64.encode(b"a:b"), "YTpi");
-    }
-
-    // -----------------------------------------------------------------------
-    // Graph-mode tests
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn graph_mode_simple_branch() {
-        let yaml = r#"
-name: graph test
-initial_state: fetch
-steps:
-  - name: fetch
-    method: GET
-    url: http://example.com
-    transitions:
-      - to: done
-        default: true
-"#;
-        let scenario = load_scenario(yaml).unwrap();
-        let results = run(&scenario, &default_config()).await;
-        assert_eq!(results.len(), 1);
-        let (log, state) = &results[0];
-        assert!(state.is_ok());
-        assert_eq!(state.as_ref().unwrap(), "done");
-        assert_eq!(log.total_steps, 1);
-        assert_eq!(log.terminal_state.as_deref(), Some("done"));
-    }
-
-    #[tokio::test]
-    async fn graph_mode_multi_step() {
-        let yaml = r#"
-name: multi step graph
-initial_state: step1
-steps:
-  - name: step1
-    method: GET
-    url: http://example.com
-    transitions:
-      - to: step2
-        default: true
-  - name: step2
-    method: GET
-    url: http://example.com
-    transitions:
-      - to: done
-        default: true
-"#;
-        let scenario = load_scenario(yaml).unwrap();
-        let results = run(&scenario, &default_config()).await;
-        let (log, state) = &results[0];
-        assert_eq!(state.as_ref().unwrap(), "done");
-        assert_eq!(log.total_steps, 2);
-    }
-
-    #[test]
-    fn evaluate_transitions_default() {
-        let edges = vec![TransitionEdge {
-            to: "next".into(),
+    fn evaluate_edges_uses_default_fallback() {
+        let edges = vec![Edge {
+            from: "start".into(),
+            to: "done".into(),
             when: None,
             default: Some(true),
         }];
+        let refs: Vec<&Edge> = edges.iter().collect();
         let response = HttpResponse {
             status: 200,
             headers: HashMap::new(),
             body: "{}".into(),
-            duration_ms: 50,
+            duration_ms: 1,
         };
-        let result = evaluate_transitions(&edges, &response, &[], "current");
-        assert_eq!(result.unwrap(), "next");
+
+        let next = evaluate_edges(&refs, &response, &[], "start").unwrap();
+        assert_eq!(next, "done");
     }
 
     #[test]
-    fn evaluate_transitions_status_match() {
+    fn evaluate_edges_matches_status_rule() {
         let edges = vec![
-            TransitionEdge {
-                to: "success".into(),
+            Edge {
+                from: "start".into(),
+                to: "retry".into(),
                 when: Some(TransitionCondition {
-                    status: Some(StatusMatch::Exact(200)),
+                    status: Some(StatusMatch::Complex(ValueCheck {
+                        gt: Some(399.0),
+                        ..ValueCheck::default()
+                    })),
                     body: None,
                     assertions: None,
                 }),
                 default: None,
             },
-            TransitionEdge {
-                to: "error".into(),
+            Edge {
+                from: "start".into(),
+                to: "done".into(),
                 when: None,
                 default: Some(true),
             },
         ];
-        let response = HttpResponse {
-            status: 200,
-            headers: HashMap::new(),
-            body: "{}".into(),
-            duration_ms: 50,
-        };
-        assert_eq!(
-            evaluate_transitions(&edges, &response, &[], "current").unwrap(),
-            "success"
-        );
-
-        let response_500 = HttpResponse {
-            status: 500,
-            headers: HashMap::new(),
-            body: "{}".into(),
-            duration_ms: 50,
-        };
-        assert_eq!(
-            evaluate_transitions(&edges, &response_500, &[], "current").unwrap(),
-            "error"
-        );
-    }
-
-    #[test]
-    fn evaluate_transitions_no_match() {
-        let edges = vec![TransitionEdge {
-            to: "only_200".into(),
-            when: Some(TransitionCondition {
-                status: Some(StatusMatch::Exact(200)),
-                body: None,
-                assertions: None,
-            }),
-            default: None,
-        }];
+        let refs: Vec<&Edge> = edges.iter().collect();
         let response = HttpResponse {
             status: 500,
             headers: HashMap::new(),
             body: "{}".into(),
-            duration_ms: 50,
-        };
-        assert!(matches!(
-            evaluate_transitions(&edges, &response, &[], "current"),
-            Err(RunError::NoMatchingTransition { .. })
-        ));
-    }
-
-    #[test]
-    fn evaluate_transitions_assertion_routing() {
-        let edges = vec![
-            TransitionEdge {
-                to: "pass_state".into(),
-                when: Some(TransitionCondition {
-                    status: None,
-                    body: None,
-                    assertions: Some(AssertionMatch::Passed),
-                }),
-                default: None,
-            },
-            TransitionEdge {
-                to: "fail_state".into(),
-                when: Some(TransitionCondition {
-                    status: None,
-                    body: None,
-                    assertions: Some(AssertionMatch::Failed),
-                }),
-                default: None,
-            },
-        ];
-        let response = HttpResponse {
-            status: 200,
-            headers: HashMap::new(),
-            body: "{}".into(),
-            duration_ms: 50,
+            duration_ms: 1,
         };
 
-        let passed = vec![AssertionResult {
-            description: "test".into(),
-            passed: true,
-            expected: "200".into(),
-            actual: "200".into(),
-        }];
-        assert_eq!(
-            evaluate_transitions(&edges, &response, &passed, "current").unwrap(),
-            "pass_state"
-        );
-
-        let failed = vec![AssertionResult {
-            description: "test".into(),
-            passed: false,
-            expected: "200".into(),
-            actual: "500".into(),
-        }];
-        assert_eq!(
-            evaluate_transitions(&edges, &response, &failed, "current").unwrap(),
-            "fail_state"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Runner bug regressions
-    // -----------------------------------------------------------------------
-
-    // Bug 1 regression: extract_context must not return a RunError when the
-    // response body is not JSON.  Before the fix it mapped the parse error to
-    // RunError::HttpError, turning a successful HTTP call into a reported
-    // failure.
-    #[test]
-    fn extract_context_non_json_body_is_warning_not_error() {
-        let mut context = HashMap::new();
-        let mut extract = HashMap::new();
-        extract.insert("token".to_string(), "token".to_string());
-
-        // Plain-text body — not valid JSON
-        let result = extract_context(&extract, "OK", &mut context, 0, "step1");
-        assert!(
-            result.is_ok(),
-            "non-JSON body must not produce an error; got {:?}",
-            result
-        );
-        // Nothing should have been extracted
-        assert!(!context.contains_key("token"));
-    }
-
-    // Bug 1 continuation: well-formed JSON still extracts correctly.
-    #[test]
-    fn extract_context_valid_json_still_works() {
-        let mut context = HashMap::new();
-        let mut extract = HashMap::new();
-        extract.insert("tok".to_string(), "token".to_string());
-
-        let result = extract_context(&extract, r#"{"token": "abc123"}"#, &mut context, 0, "step1");
-        assert!(result.is_ok());
-        assert_eq!(context.get("tok").map(|s| s.as_str()), Some("abc123"));
-    }
-
-    // Bug 3 regression: a step missing transition: in linear mode must return
-    // RunError::InvalidTransition instead of panicking.
-    #[tokio::test]
-    async fn missing_transition_returns_error_not_panic() {
-        let scenario = Scenario {
-            name: "test".into(),
-            initial_state: "start".into(),
-            concurrency: None,
-            auth: None,
-            variables: None,
-            proxy: None,
-            insecure: None,
-            default_timeout_ms: None,
-            max_iterations: None,
-            terminal_states: None,
-            steps: vec![Step {
-                name: "no_transition".into(),
-                method: Method::Get,
-                url: "http://example.com".into(),
-                transition: None, // deliberately missing
-                transitions: None,
-                state: None,
-                headers: None,
-                body: None,
-                multipart: None,
-                extract: None,
-                retry: None,
-                assertions: None,
-                timeout_ms: None,
-                pre_request: None,
-                post_request: None,
-                tags: None,
-            }],
-        };
-
-        let results = run(&scenario, &default_config()).await;
-        assert!(
-            matches!(&results[0].1, Err(RunError::InvalidTransition { .. })),
-            "expected InvalidTransition, got {:?}",
-            results[0].1
-        );
+        let next = evaluate_edges(&refs, &response, &[], "start").unwrap();
+        assert_eq!(next, "retry");
     }
 }

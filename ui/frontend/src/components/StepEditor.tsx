@@ -23,7 +23,6 @@ export default function StepEditor({
   onMoveDown,
 }: StepEditorProps) {
   const [expanded, setExpanded] = useState(false);
-  const transition = step.transition;
 
   return (
     <div className="bg-bg-surface border border-border rounded-lg overflow-hidden transition-all duration-200 hover:border-accent/40">
@@ -96,49 +95,16 @@ export default function StepEditor({
                 className="w-full bg-bg-secondary text-xs px-2.5 py-1.5 border border-border rounded text-text-primary focus:outline-none focus:border-accent"
               />
             </div>
-            {transition ? (
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[0.65rem] text-text-muted uppercase tracking-wider font-medium mb-1.5">
-                    From State
-                  </label>
-                  <input
-                    value={transition.from}
-                    onChange={(e) =>
-                      onChange({
-                        ...step,
-                        transition: { ...transition, from: e.target.value },
-                      })
-                    }
-                    className="w-full bg-bg-secondary text-xs font-mono px-2.5 py-1.5 border border-border rounded text-text-primary focus:outline-none focus:border-accent"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[0.65rem] text-text-muted uppercase tracking-wider font-medium mb-1.5">
-                    To State
-                  </label>
-                  <input
-                    value={transition.to}
-                    onChange={(e) =>
-                      onChange({
-                        ...step,
-                        transition: { ...transition, to: e.target.value },
-                      })
-                    }
-                    className="w-full bg-bg-secondary text-xs font-mono px-2.5 py-1.5 border border-border rounded text-success focus:outline-none focus:border-accent"
-                  />
-                </div>
-              </div>
-            ) : (
-              <div>
-                <label className="block text-[0.65rem] text-text-muted uppercase tracking-wider font-medium mb-1.5">
-                  Transitions
-                </label>
-                <div className="bg-bg-secondary text-xs font-mono px-2.5 py-1.5 border border-border rounded text-text-secondary">
-                  {formatTransitionEdges(step)}
-                </div>
-              </div>
-            )}
+            <div>
+              <label className="block text-[0.65rem] text-text-muted uppercase tracking-wider font-medium mb-1.5">
+                State
+              </label>
+              <input
+                value={step.state}
+                onChange={(e) => onChange({ ...step, state: e.target.value })}
+                className="w-full bg-bg-secondary text-xs font-mono px-2.5 py-1.5 border border-border rounded text-text-primary focus:outline-none focus:border-accent"
+              />
+            </div>
           </div>
           
           <div>
@@ -165,14 +131,4 @@ export default function StepEditor({
       )}
     </div>
   );
-}
-
-function formatTransitionEdges(step: Step): string {
-  if (!step.transitions || step.transitions.length === 0) {
-    return `${step.state ?? step.name} -> done`;
-  }
-
-  return step.transitions
-    .map((edge) => `${step.state ?? step.name} -> ${edge.to}${edge.default ? " (default)" : ""}`)
-    .join(", ");
 }

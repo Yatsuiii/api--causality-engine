@@ -876,6 +876,7 @@ fn fix_template_vars_in_json(raw: &str) -> String {
 
 fn build_yaml(name: &str, vars: &[(String, String)], requests: &[ImportedRequest]) -> String {
     let mut yaml = String::new();
+    let mut edges = Vec::new();
 
     yaml.push_str(&format!("name: {}\n", sanitize_yaml_str(name)));
     yaml.push_str("initial_state: start\n");
@@ -909,6 +910,7 @@ fn build_yaml(name: &str, vars: &[(String, String)], requests: &[ImportedRequest
         };
 
         yaml.push_str(&format!("  - name: {}\n", sanitize_yaml_str(&req.name)));
+        yaml.push_str(&format!("    state: {}\n", prev_state));
         yaml.push_str(&format!("    method: {}\n", req.method));
         yaml.push_str(&format!("    url: \"{}\"\n", req.url));
 
@@ -1050,11 +1052,16 @@ fn build_yaml(name: &str, vars: &[(String, String)], requests: &[ImportedRequest
             }
         }
 
-        yaml.push_str("    transition:\n");
-        yaml.push_str(&format!("      from: {}\n", prev_state));
-        yaml.push_str(&format!("      to: {}\n", next_state));
+        edges.push((prev_state.clone(), next_state.clone()));
 
         prev_state = next_state;
+    }
+
+    yaml.push_str("edges:\n");
+    for (from, to) in edges {
+        yaml.push_str(&format!("  - from: {}\n", from));
+        yaml.push_str(&format!("    to: {}\n", to));
+        yaml.push_str("    default: true\n");
     }
 
     yaml

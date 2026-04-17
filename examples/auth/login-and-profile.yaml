@@ -7,6 +7,7 @@ variables:
 
 steps:
   - name: login
+    state: login
     method: POST
     url: "{{base_url}}/posts"
     headers:
@@ -19,11 +20,9 @@ steps:
       - status: 201
     extract:
       session_token: "id"
-    transition:
-      from: login
-      to: fetch_profile
 
   - name: fetch profile
+    state: fetch_profile
     method: GET
     url: "{{base_url}}/users/1"
     headers:
@@ -40,6 +39,10 @@ steps:
     extract:
       username: "username"
       email: "email"
-    transition:
-      from: fetch_profile
-      to: done
+edges:
+  - from: login
+    to: fetch_profile
+    default: true
+  - from: fetch_profile
+    to: done
+    default: true

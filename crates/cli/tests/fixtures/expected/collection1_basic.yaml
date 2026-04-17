@@ -4,26 +4,23 @@ variables:
   base_url: "https://jsonplaceholder.typicode.com"
 steps:
   - name: Get Post
+    state: start
     method: GET
     url: "{{base_url}}/posts/1"
     headers:
       Accept: "application/json"
     assert:
       - status: 200
-    transition:
-      from: start
-      to: get_post
   - name: Get Posts with Query Param
+    state: get_post
     method: GET
     url: "{{base_url}}/posts?userId=1"
     headers:
       Accept: "application/json"
     assert:
       - status: 200
-    transition:
-      from: get_post
-      to: get_posts_with_query_param
   - name: Create Post
+    state: get_posts_with_query_param
     method: POST
     url: "{{base_url}}/posts"
     headers:
@@ -35,10 +32,8 @@ steps:
       userId: 1
     assert:
       - status: 201
-    transition:
-      from: get_posts_with_query_param
-      to: create_post
   - name: Update Post
+    state: create_post
     method: PUT
     url: "{{base_url}}/posts/1"
     headers:
@@ -51,16 +46,27 @@ steps:
       userId: 1
     assert:
       - status: 200
-    transition:
-      from: create_post
-      to: update_post
   - name: Delete Post
+    state: update_post
     method: DELETE
     url: "{{base_url}}/posts/1"
     headers:
       Accept: "application/json"
     assert:
       - status: 200
-    transition:
-      from: update_post
-      to: done
+edges:
+  - from: start
+    to: get_post
+    default: true
+  - from: get_post
+    to: get_posts_with_query_param
+    default: true
+  - from: get_posts_with_query_param
+    to: create_post
+    default: true
+  - from: create_post
+    to: update_post
+    default: true
+  - from: update_post
+    to: done
+    default: true

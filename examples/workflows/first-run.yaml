@@ -2,17 +2,16 @@ name: simple flow
 initial_state: start
 steps:
   - name: list users
+    state: start
     method: GET
     url: https://jsonplaceholder.typicode.com/users
     assert:
       - status: 200
       - response_time_ms:
           lt: 5000
-    transition:
-      from: start
-      to: fetched
 
   - name: get first user
+    state: fetched
     method: GET
     url: https://jsonplaceholder.typicode.com/users/1
     assert:
@@ -20,6 +19,10 @@ steps:
       - body:
           name:
             exists: true
-    transition:
-      from: fetched
-      to: done
+edges:
+  - from: start
+    to: fetched
+    default: true
+  - from: fetched
+    to: done
+    default: true

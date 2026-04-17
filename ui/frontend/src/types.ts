@@ -54,21 +54,17 @@ export interface Auth {
 
 /* ── Step ─────────────────────────────────────────────────────────────── */
 
-export interface Transition {
+export interface Edge {
   from: string;
   to: string;
+  when?: TransitionCondition;
+  default?: boolean;
 }
 
 export interface TransitionCondition {
   status?: number | ValueCheck | Record<string, unknown>;
   body?: Record<string, ValueCheck | Record<string, unknown>>;
   assertions?: "passed" | "failed";
-}
-
-export interface TransitionEdge {
-  to: string;
-  when?: TransitionCondition;
-  default?: boolean;
 }
 
 export interface RetryConfig {
@@ -110,11 +106,9 @@ export interface Hook {
 
 export interface Step {
   name: string;
+  state: string;
   method: HttpMethod;
   url: string;
-  transition?: Transition;
-  transitions?: TransitionEdge[];
-  state?: string;
   headers?: Record<string, string>;
   body?: unknown;
   multipart?: MultipartFieldDef[];
@@ -132,6 +126,7 @@ export interface Scenario {
   name: string;
   initial_state: string;
   steps: Step[];
+  edges?: Edge[];
   concurrency?: number;
   auth?: Auth;
   variables?: Record<string, string>;
