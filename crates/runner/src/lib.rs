@@ -38,6 +38,10 @@ pub enum RunError {
         state: String,
         status: u16,
     },
+    NoOutgoingEdges {
+        step: String,
+        state: String,
+    },
     MaxIterationsExceeded {
         limit: u64,
     },
@@ -69,6 +73,13 @@ impl fmt::Display for RunError {
                     f,
                     "State '{}': no matching transition for status {}",
                     state, status
+                )
+            }
+            RunError::NoOutgoingEdges { step, state } => {
+                write!(
+                    f,
+                    "Step '{}': state '{}' has no outgoing edges — explicit graphs require every state to transition",
+                    step, state
                 )
             }
             RunError::MaxIterationsExceeded { limit } => {
@@ -117,6 +128,9 @@ pub struct RunConfig {
     pub verbose: bool,
     pub insecure: bool,
     pub proxy: Option<String>,
+    /// CLI-supplied concurrency override. Takes precedence over the deprecated
+    /// `scenario.concurrency` field.
+    pub concurrency: Option<usize>,
 }
 
 async fn fetch_oauth2_token(
@@ -543,6 +557,14 @@ fn outgoing_edges<'a>(scenario: &'a Scenario, state: &str) -> Vec<&'a Edge> {
         .collect()
 }
 
+fn default_edge_target(edges: &[&Edge]) -> Option<String> {
+    edges
+        .iter()
+        .find(|edge| edge.default.unwrap_or(false))
+        .map(|edge| edge.to.clone())
+        .or_else(|| edges.first().map(|edge| edge.to.clone()))
+}
+
 async fn run_once(
     scenario: &Scenario,
     task_id: usize,
@@ -623,21 +645,29 @@ async fn run_once(
         {
             Ok(result) => {
                 let edges = outgoing_edges(scenario, &state_before);
-                let next_state = if edges.is_empty() {
-                    state_before.clone()
-                } else {
-                    match evaluate_edges(
-                        &edges,
-                        &result.response,
-                        &result.assertion_results,
-                        &state_before,
-                    ) {
-                        Ok(next_state) => next_state,
-                        Err(e) => {
-                            log.total_duration_ms = run_start.elapsed().as_millis() as u64;
-                            let owned_log = std::mem::take(&mut log);
-                            return (owned_log, Err(e));
-                        }
+                if edges.is_empty() {
+                    log.total_duration_ms = run_start.elapsed().as_millis() as u64;
+                    let owned_log = std::mem::take(&mut log);
+                    return (
+                        owned_log,
+                        Err(RunError::NoOutgoingEdges {
+                            step: step.name.clone(),
+                            state: state_before.clone(),
+                        }),
+                    );
+                }
+
+                let next_state = match evaluate_edges(
+                    &edges,
+                    &result.response,
+                    &result.assertion_results,
+                    &state_before,
+                ) {
+                    Ok(next_state) => next_state,
+                    Err(e) => {
+                        log.total_duration_ms = run_start.elapsed().as_millis() as u64;
+                        let owned_log = std::mem::take(&mut log);
+                        return (owned_log, Err(e));
                     }
                 };
 
@@ -669,25 +699,24 @@ async fn run_once(
                     log.failed += 1;
                 }
 
-                if edges.is_empty() {
-                    log.terminal_state = Some(state_before.clone());
-                    break;
-                }
-
                 current_state = next_state;
             }
             Err(RunError::Skipped { .. }) => {
                 let edges = outgoing_edges(scenario, &state_before);
-                if edges.is_empty() {
-                    log.terminal_state = Some(state_before.clone());
-                    break;
-                }
-
-                let next_state = edges
-                    .iter()
-                    .find(|edge| edge.default.unwrap_or(false))
-                    .map(|edge| edge.to.clone())
-                    .unwrap_or_else(|| edges[0].to.clone());
+                let next_state = match default_edge_target(&edges) {
+                    Some(target) => target,
+                    None => {
+                        log.total_duration_ms = run_start.elapsed().as_millis() as u64;
+                        let owned_log = std::mem::take(&mut log);
+                        return (
+                            owned_log,
+                            Err(RunError::NoOutgoingEdges {
+                                step: step.name.clone(),
+                                state: state_before.clone(),
+                            }),
+                        );
+                    }
+                };
                 debug!(
                     task_id,
                     step = step.name.as_str(),
@@ -712,7 +741,9 @@ pub async fn run(
     scenario: &Scenario,
     config: &RunConfig,
 ) -> Vec<(ExecutionLog, Result<String, RunError>)> {
-    let concurrency = scenario.concurrency.unwrap_or(1);
+    #[allow(deprecated)]
+    let scenario_concurrency = scenario.concurrency;
+    let concurrency = config.concurrency.or(scenario_concurrency).unwrap_or(1);
     let mut handles = Vec::new();
 
     for i in 1..=concurrency {

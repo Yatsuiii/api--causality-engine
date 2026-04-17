@@ -84,9 +84,14 @@ pub struct Scenario {
     pub name: String,
     pub initial_state: String,
     pub steps: Vec<Step>,
-    #[serde(default)]
     pub edges: Vec<Edge>,
+    /// Deprecated: use the CLI `--concurrency / -c` flag instead. This field
+    /// will be removed in a future release.
     #[serde(default)]
+    #[deprecated(
+        since = "0.1.6",
+        note = "use the CLI `--concurrency / -c` flag; scenario-level concurrency will be removed"
+    )]
     pub concurrency: Option<usize>,
     #[serde(default)]
     pub auth: Option<Auth>,
@@ -425,6 +430,21 @@ steps:
     method: GET
     url: https://example.com
 edges: []
+"#;
+
+        assert!(load_scenario(yaml).is_err());
+    }
+
+    #[test]
+    fn load_scenario_requires_explicit_edges() {
+        let yaml = r#"
+name: invalid
+initial_state: start
+steps:
+  - name: step1
+    state: start
+    method: GET
+    url: https://example.com
 "#;
 
         assert!(load_scenario(yaml).is_err());

@@ -9,6 +9,8 @@ pub fn cmd_validate(path: &str, show_graph: bool) -> Result<(), CliError> {
 
     println!();
     println!("{} {}", "Validation".bold(), "Report".bold().cyan());
+    #[allow(deprecated)]
+    let legacy_concurrency = scenario.concurrency.unwrap_or(1);
     println!(
         "{} {} | {} {} | {} {}",
         "Scenario:".bold(),
@@ -16,7 +18,7 @@ pub fn cmd_validate(path: &str, show_graph: bool) -> Result<(), CliError> {
         "Steps:".bold(),
         scenario.steps.len(),
         "Concurrency:".bold(),
-        scenario.concurrency.unwrap_or(1),
+        legacy_concurrency,
     );
 
     if show_graph {
