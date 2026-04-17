@@ -48,24 +48,36 @@ export default function Editor({
   };
 
   const deleteStep = useCallback((index: number) => {
+    const removedState = stepsList[index]?.state;
+    const prevState = index > 0 ? stepsList[index - 1]?.state : undefined;
+    const nextState = index < stepsList.length - 1 ? stepsList[index + 1]?.state : "done";
     const steps = stepsList.filter((_, i) => i !== index);
     stepKeysRef.current.splice(index, 1);
-    onScenarioChange({ ...scenario, steps });
+    let edges = (scenario.edges ?? []).filter(
+      (edge) => edge.from !== removedState && edge.to !== removedState,
+    );
+    if (prevState) {
+      edges = replaceDefaultEdge(edges, prevState, nextState ?? "done");
+    }
+    onScenarioChange({ ...scenario, steps, edges });
   }, [stepsList, scenario, onScenarioChange]);
 
   const addStep = () => {
-    const lastState =
-      stepsList.length > 0
-        ? getStepExitState(stepsList[stepsList.length - 1])
-        : initialState;
+    const newState =
+      stepsList.length === 0 ? initialState : `state_${stepsList.length + 1}`;
     const newStep: Step = {
       name: `step ${stepsList.length + 1}`,
+      state: newState,
       method: "GET",
       url: "",
-      transition: { from: lastState, to: "done" },
     };
+    let edges = [...(scenario.edges ?? [])];
+    if (stepsList.length > 0) {
+      edges = replaceDefaultEdge(edges, stepsList[stepsList.length - 1].state, newState);
+    }
+    edges.push({ from: newState, to: "done", default: true });
     stepKeysRef.current.push(`step-key-${++nextKeyId.current}`);
-    onScenarioChange({ ...scenario, steps: [...stepsList, newStep] });
+    onScenarioChange({ ...scenario, steps: [...stepsList, newStep], edges });
   };
 
   const moveStep = (from: number, to: number) => {
@@ -85,14 +97,11 @@ export default function Editor({
   const stateNodes = new Set<string>();
   stateNodes.add(initialState);
   stepsList.forEach((s) => {
-    if (s.transition) {
-      stateNodes.add(s.transition.from);
-      stateNodes.add(s.transition.to);
-    }
-    if (s.transitions && s.transitions.length > 0) {
-      stateNodes.add(s.state ?? s.name);
-      s.transitions.forEach((edge) => stateNodes.add(edge.to));
-    }
+    stateNodes.add(s.state);
+  });
+  (scenario.edges ?? []).forEach((edge) => {
+    stateNodes.add(edge.from);
+    stateNodes.add(edge.to);
   });
   const statesArray = Array.from(stateNodes);
 
@@ -330,8 +339,12 @@ export default function Editor({
   );
 }
 
-function getStepExitState(step: Step): string {
-  if (step.transition) return step.transition.to;
-  const defaultEdge = step.transitions?.find((edge) => edge.default);
-  return defaultEdge?.to ?? step.transitions?.[0]?.to ?? "done";
+function replaceDefaultEdge(
+  edges: NonNullable<Scenario["edges"]>,
+  from: string,
+  to: string,
+): NonNullable<Scenario["edges"]> {
+  const next = edges.filter((edge) => !(edge.from === from && edge.default));
+  next.push({ from, to, default: true });
+  return next;
 }

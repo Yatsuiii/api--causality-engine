@@ -5,6 +5,7 @@ variables:
   base_url: https://jsonplaceholder.typicode.com
 steps:
   - name: create post
+    state: start
     method: POST
     url: "{{base_url}}/posts"
     headers:
@@ -26,11 +27,9 @@ steps:
           lt: 5000
     extract:
       post_id: "id"
-    transition:
-      from: start
-      to: created
 
   - name: get created post
+    state: created
     method: GET
     url: "{{base_url}}/posts/1"
     assert:
@@ -45,11 +44,9 @@ steps:
             contains: "json"
     extract:
       user_id: "userId"
-    transition:
-      from: created
-      to: verified
 
   - name: update post
+    state: verified
     method: PUT
     url: "{{base_url}}/posts/1"
     headers:
@@ -64,26 +61,35 @@ steps:
       - body:
           title:
             eq: "Updated by ACE"
-    transition:
-      from: verified
-      to: updated
 
   - name: list user posts
+    state: updated
     method: GET
     url: "{{base_url}}/users/{{user_id}}/posts"
     assert:
       - status: 200
       - response_time_ms:
           lt: 5000
-    transition:
-      from: updated
-      to: listed
 
   - name: delete post
+    state: listed
     method: DELETE
     url: "{{base_url}}/posts/1"
     assert:
       - status: 200
-    transition:
-      from: listed
-      to: done
+edges:
+  - from: start
+    to: created
+    default: true
+  - from: created
+    to: verified
+    default: true
+  - from: verified
+    to: updated
+    default: true
+  - from: updated
+    to: listed
+    default: true
+  - from: listed
+    to: done
+    default: true

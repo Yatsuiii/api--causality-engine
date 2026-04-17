@@ -15,12 +15,6 @@ steps:
       - body:
           userId:
             eq: 1
-    transitions:
-      - to: done
-        when:
-          assertions: passed
-      - to: wait_and_retry
-        default: true
 
   - name: wait and retry
     state: wait_and_retry
@@ -29,6 +23,14 @@ steps:
     pre_request:
       - delay_ms: 500
       - log: "Waiting before retry..."
-    transitions:
-      - to: check_status
-        default: true
+edges:
+  - from: check_status
+    to: done
+    when:
+      assertions: passed
+  - from: check_status
+    to: wait_and_retry
+    default: true
+  - from: wait_and_retry
+    to: check_status
+    default: true

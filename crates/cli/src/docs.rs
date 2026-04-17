@@ -43,20 +43,21 @@ pub fn cmd_docs(path: &str, output: Option<String>) -> Result<(), CliError> {
             step.url
         ));
         doc.push_str(&format!("**{}**\n\n", step.name));
-        let next_states = step
-            .resolved_edges()
-            .map(|(_, edges)| {
-                edges
-                    .iter()
-                    .map(|e| e.to.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            })
-            .unwrap_or_else(|_| "?".into());
+        let next_states = scenario
+            .edges
+            .iter()
+            .filter(|edge| edge.from == step.state)
+            .map(|edge| edge.to.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
         doc.push_str(&format!(
             "State: `{}` → `{}`\n\n",
             step.state_name(),
-            next_states,
+            if next_states.is_empty() {
+                "terminal"
+            } else {
+                &next_states
+            },
         ));
 
         if let Some(headers) = &step.headers {

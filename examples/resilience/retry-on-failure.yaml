@@ -2,6 +2,7 @@ name: retry test
 initial_state: start
 steps:
   - name: login
+    state: start
     method: POST
     url: https://jsonplaceholder.typicode.com/posts
     headers:
@@ -16,6 +17,7 @@ steps:
       - status: 201
     extract:
       token: "id"
-    transition:
-      from: start
-      to: logged_in
+edges:
+  - from: start
+    to: logged_in
+    default: true

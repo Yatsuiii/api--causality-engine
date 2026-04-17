@@ -65,6 +65,13 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
 
         if args.verbose {
             for (i, step) in scenario.steps.iter().enumerate() {
+                let next_states = scenario
+                    .edges
+                    .iter()
+                    .filter(|edge| edge.from == step.state)
+                    .map(|edge| edge.to.as_str())
+                    .collect::<Vec<_>>()
+                    .join("|");
                 println!(
                     "  {} {} {} {} [{} → {}]",
                     format!("{}.", i + 1).dimmed(),
@@ -72,14 +79,7 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
                     step.url.dimmed(),
                     step.name,
                     step.state_name().cyan(),
-                    step.resolved_edges()
-                        .map(|(_, edges)| edges
-                            .iter()
-                            .map(|e| e.to.as_str())
-                            .collect::<Vec<_>>()
-                            .join("|"))
-                        .unwrap_or_default()
-                        .cyan(),
+                    next_states.cyan(),
                 );
             }
         }

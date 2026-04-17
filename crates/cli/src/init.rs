@@ -11,11 +11,9 @@ variables:
 
 steps:
   - name: get_post
+    state: get_post
     method: GET
     url: "{{base_url}}/posts/{{post_id}}"
-    transition:
-      from: get_post
-      to: get_comments
     assert:
       - status: 200
         body:
@@ -25,13 +23,18 @@ steps:
       post_title: title
 
   - name: get_comments
+    state: get_comments
     method: GET
     url: "{{base_url}}/posts/{{post_id}}/comments"
-    transition:
-      from: get_comments
-      to: done
     assert:
       - status: 200
+edges:
+  - from: get_post
+    to: get_comments
+    default: true
+  - from: get_comments
+    to: done
+    default: true
 "#;
 
 const MINIMAL_TEMPLATE: &str = r#"name: My API Scenario
@@ -39,13 +42,15 @@ initial_state: request
 
 steps:
   - name: request
+    state: request
     method: GET
     url: https://example.com/api/resource
-    transition:
-      from: request
-      to: done
     assert:
       - status: 200
+edges:
+  - from: request
+    to: done
+    default: true
 "#;
 
 pub fn cmd_init(output: &str, minimal: bool) -> Result<(), CliError> {

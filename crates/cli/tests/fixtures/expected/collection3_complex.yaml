@@ -5,6 +5,7 @@ variables:
 steps:
   # --- Folder: Authentication ---
   - name: OAuth2 Token Exchange
+    state: start
     method: POST
     url: "{{base_url}}/posts"
     tags: [Authentication]
@@ -35,10 +36,8 @@ steps:
     #   pm.variables.set('auth_header', 'Basic ' + encoded);
     # WARN: test script lines not translated:
     #   pm.environment.set('api_token', '');
-    transition:
-      from: start
-      to: oauth2_token_exchange
   - name: Refresh Token
+    state: oauth2_token_exchange
     method: POST
     url: "{{base_url}}/posts"
     tags: [Authentication]
@@ -54,11 +53,9 @@ steps:
     post_request:
       - set:
           api_token: "refreshed-token-{{_api_token_raw}}"
-    transition:
-      from: oauth2_token_exchange
-      to: refresh_token
   # --- Folder: Posts ---
   - name: Create Post
+    state: refresh_token
     method: POST
     url: "{{base_url}}/posts"
     tags: [Posts]
@@ -87,10 +84,8 @@ steps:
     # WARN: pre-request lines not translated:
     #   pm.variables.set('timestamp', new Date().toISOString());
     #   pm.variables.set('random_title', 'Post-' + Math.random().toString(36).substr(2,6));
-    transition:
-      from: refresh_token
-      to: create_post
   - name: Get Post
+    state: create_post
     method: GET
     url: "{{base_url}}/posts/{{post_id}}"
     tags: [Posts]
@@ -102,11 +97,9 @@ steps:
     #   pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');
     #   pm.environment.set('post_owner', 'admin');
     #   pm.environment.set('post_owner', 'user');
-    transition:
-      from: create_post
-      to: get_post
   # --- Folder: Media ---
   - name: Upload File (Form Data)
+    state: get_post
     method: POST
     url: "{{base_url}}/posts"
     tags: [Media]
@@ -125,11 +118,9 @@ steps:
       upload_id: id
     # WARN: pre-request lines not translated:
     #   pm.variables.set('file_name', 'test-upload-' + Date.now() + '.txt');
-    transition:
-      from: get_post
-      to: upload_file__form_data
   # --- Folder: Audit ---
   - name: Get Audit Log
+    state: upload_file__form_data
     method: GET
     url: "{{base_url}}/posts?userId={{user_id}}&_start={{audit_from}}&_end={{audit_to}}"
     tags: [Audit]
@@ -147,6 +138,22 @@ steps:
     #   pm.environment.set('has_audit_entries', 'true');
     #   pm.environment.set('last_audit_id', json[json.length - 1].id);
     #   pm.environment.set('has_audit_entries', 'false');
-    transition:
-      from: upload_file__form_data
-      to: done
+edges:
+  - from: start
+    to: oauth2_token_exchange
+    default: true
+  - from: oauth2_token_exchange
+    to: refresh_token
+    default: true
+  - from: refresh_token
+    to: create_post
+    default: true
+  - from: create_post
+    to: get_post
+    default: true
+  - from: get_post
+    to: upload_file__form_data
+    default: true
+  - from: upload_file__form_data
+    to: done
+    default: true

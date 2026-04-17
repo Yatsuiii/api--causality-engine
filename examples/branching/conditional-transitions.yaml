@@ -16,12 +16,6 @@ steps:
       - status: 201
     extract:
       post_id: "id"
-    transitions:
-      - to: fetch_profile
-        when:
-          assertions: passed
-      - to: login_failed
-        default: true
 
   - name: fetch_profile
     state: fetch_profile
@@ -32,17 +26,26 @@ steps:
       - body:
           username:
             exists: true
-    transitions:
-      - to: done
-        when:
-          status: 200
-      - to: login_failed
-        default: true
 
   - name: login_failed
     state: login_failed
     method: GET
     url: "{{base_url}}/posts/1"
-    transitions:
-      - to: error
-        default: true
+edges:
+  - from: login
+    to: fetch_profile
+    when:
+      assertions: passed
+  - from: login
+    to: login_failed
+    default: true
+  - from: fetch_profile
+    to: done
+    when:
+      status: 200
+  - from: fetch_profile
+    to: login_failed
+    default: true
+  - from: login_failed
+    to: error
+    default: true
