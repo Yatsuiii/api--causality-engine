@@ -1,6 +1,6 @@
 use crate::error::{CliError, load_execution_log};
 use colored::Colorize;
-use runner::{ExecutionLog, RunError, StepLog};
+use executor::{ExecutionLog, RunError, StepLog};
 use std::io::Write;
 
 // ---------------------------------------------------------------------------
@@ -345,7 +345,7 @@ pub fn cmd_report(log_path: &str, format: &str, output: Option<String>) -> Resul
 mod tests {
     use super::*;
     use ace_core::assertions::AssertionResult;
-    use runner::StepLog;
+    use executor::StepLog;
 
     fn passed_log(state_after: &str) -> ExecutionLog {
         ExecutionLog {

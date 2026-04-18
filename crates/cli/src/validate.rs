@@ -1,11 +1,13 @@
-use crate::error::{CliError, load_scenario_file};
-use ace_core::validate::{render_state_graph, validate_scenario};
+use crate::error::{CliError, print_diagnostics, read_file};
+use ace_core::validator::{LineIndex, render_state_graph, validate_scenario};
 use colored::Colorize;
 
 pub fn cmd_validate(path: &str, show_graph: bool) -> Result<(), CliError> {
-    let scenario = load_scenario_file(path)?;
+    let yaml = read_file(path)?;
+    let scenario = model::load_scenario(&yaml).map_err(CliError::YamlParse)?;
+    let index = LineIndex::build(&yaml);
 
-    let issues = validate_scenario(&scenario);
+    let diagnostics = validate_scenario(&scenario, &index);
 
     println!();
     println!("{} {}", "Validation".bold(), "Report".bold().cyan());
@@ -29,15 +31,24 @@ pub fn cmd_validate(path: &str, show_graph: bool) -> Result<(), CliError> {
     }
 
     println!("\n{}", "Static Checks".bold());
-    if issues.is_empty() {
+    if diagnostics.is_empty() {
         println!("  {} no validation issues found", "✓".green().bold());
         return Ok(());
     }
 
-    println!(
-        "  {} found {} issue(s)",
-        "✗".red().bold(),
-        issues.len().to_string().red()
-    );
-    Err(CliError::Validation(issues))
+    let (error_count, warn_count) = print_diagnostics(&diagnostics, path);
+
+    eprintln!();
+    if error_count > 0 {
+        eprintln!(
+            "  {} found {} error(s), {} warning(s)",
+            "✗".red().bold(),
+            error_count.to_string().red(),
+            warn_count,
+        );
+        Err(CliError::ValidationFailed)
+    } else {
+        eprintln!("  {} found {} warning(s)", "⚠".yellow().bold(), warn_count,);
+        Ok(())
+    }
 }

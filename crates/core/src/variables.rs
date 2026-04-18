@@ -1,4 +1,27 @@
+use serde_json::Value;
 use std::collections::HashMap;
+
+/// Typed variable context. Values preserve their native JSON type so that
+/// numeric comparisons (lt/gt) and equality checks work correctly without
+/// relying on string parsing.
+pub type Context = HashMap<String, Value>;
+
+/// Serialize a `Value` to the string used when interpolating into a template.
+/// Strings are returned as-is; other types use their JSON representation.
+pub fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// Parse a bare string into the most specific scalar type that fits.
+/// Used when loading scenario-declared variables (which are always YAML
+/// strings) into the typed context.
+fn parse_scalar(s: &str) -> Value {
+    serde_json::from_str(s).unwrap_or_else(|_| Value::String(s.to_owned()))
+}
 
 /// Resolve all `{{...}}` placeholders in a string.
 ///
@@ -8,7 +31,7 @@ use std::collections::HashMap;
 ///   - `{{$uuid}}` — random UUID v4
 ///   - `{{$timestamp}}` — unix timestamp (seconds)
 ///   - `{{$randomInt}}` — random integer 0–99999
-pub fn resolve_template(template: &str, context: &HashMap<String, String>) -> String {
+pub fn resolve_template(template: &str, context: &Context) -> String {
     let mut result = String::with_capacity(template.len());
     let mut remaining = template;
 
@@ -31,7 +54,7 @@ pub fn resolve_template(template: &str, context: &HashMap<String, String>) -> St
     result
 }
 
-fn resolve_key(key: &str, context: &HashMap<String, String>) -> String {
+fn resolve_key(key: &str, context: &Context) -> String {
     // Built-in dynamic variables
     if key == "$uuid" {
         return uuid::Uuid::new_v4().to_string();
@@ -50,42 +73,42 @@ fn resolve_key(key: &str, context: &HashMap<String, String>) -> String {
     }
 
     // Context variable
-    context.get(key).cloned().unwrap_or_default()
+    context.get(key).map(value_to_string).unwrap_or_default()
 }
 
 /// Resolve all templates in a HashMap of headers/values.
-pub fn resolve_map(
-    map: &HashMap<String, String>,
-    context: &HashMap<String, String>,
-) -> HashMap<String, String> {
+pub fn resolve_map(map: &HashMap<String, String>, context: &Context) -> HashMap<String, String> {
     map.iter()
         .map(|(k, v)| (k.clone(), resolve_template(v, context)))
         .collect()
 }
 
-/// Merge scenario-level variables into a context, resolving any templates.
+/// Merge scenario-level variables and CLI overrides into a typed context.
+///
+/// Scenario variables declared as YAML strings are parsed into their native
+/// types (bool, number, string). CLI overrides are always treated as strings
+/// because the shell has no type information.
 pub fn build_initial_context(
     variables: Option<&HashMap<String, String>>,
     cli_overrides: &HashMap<String, String>,
-) -> HashMap<String, String> {
-    let mut context = HashMap::new();
+) -> Context {
+    let mut context = Context::new();
 
-    // Start with scenario-declared variables
     if let Some(vars) = variables {
         for (k, v) in vars {
-            context.insert(k.clone(), v.clone());
+            context.insert(k.clone(), parse_scalar(v));
         }
     }
 
-    // CLI overrides take precedence
     for (k, v) in cli_overrides {
-        context.insert(k.clone(), v.clone());
+        context.insert(k.clone(), Value::String(v.clone()));
     }
 
-    // Now resolve any templates within the context values themselves
-    let snapshot: HashMap<String, String> = context.clone();
+    let snapshot = context.clone();
     for value in context.values_mut() {
-        *value = resolve_template(value, &snapshot);
+        if let Value::String(s) = value {
+            *s = resolve_template(s, &snapshot);
+        }
     }
 
     context
@@ -99,24 +122,28 @@ pub fn build_initial_context(
 mod tests {
     use super::*;
 
+    fn str_ctx(pairs: &[(&str, &str)]) -> Context {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
+            .collect()
+    }
+
     #[test]
     fn plain_text_unchanged() {
-        let ctx = HashMap::new();
+        let ctx = Context::new();
         assert_eq!(resolve_template("hello world", &ctx), "hello world");
     }
 
     #[test]
     fn context_variable() {
-        let mut ctx = HashMap::new();
-        ctx.insert("token".into(), "abc123".into());
+        let ctx = str_ctx(&[("token", "abc123")]);
         assert_eq!(resolve_template("Bearer {{token}}", &ctx), "Bearer abc123");
     }
 
     #[test]
     fn multiple_variables() {
-        let mut ctx = HashMap::new();
-        ctx.insert("host".into(), "example.com".into());
-        ctx.insert("id".into(), "42".into());
+        let ctx = str_ctx(&[("host", "example.com"), ("id", "42")]);
         assert_eq!(
             resolve_template("https://{{host}}/users/{{id}}", &ctx),
             "https://example.com/users/42"
@@ -124,10 +151,24 @@ mod tests {
     }
 
     #[test]
+    fn numeric_variable_interpolates_as_string() {
+        let mut ctx = Context::new();
+        ctx.insert("count".into(), Value::Number(42.into()));
+        assert_eq!(resolve_template("count={{count}}", &ctx), "count=42");
+    }
+
+    #[test]
+    fn bool_variable_interpolates_as_string() {
+        let mut ctx = Context::new();
+        ctx.insert("flag".into(), Value::Bool(true));
+        assert_eq!(resolve_template("flag={{flag}}", &ctx), "flag=true");
+    }
+
+    #[test]
     fn env_variable() {
         // SAFETY: single-threaded test, no other threads reading this var
         unsafe { std::env::set_var("ACE_TEST_VAR", "test_value") };
-        let ctx = HashMap::new();
+        let ctx = Context::new();
         assert_eq!(
             resolve_template("{{$env.ACE_TEST_VAR}}", &ctx),
             "test_value"
@@ -136,22 +177,22 @@ mod tests {
 
     #[test]
     fn uuid_generates_valid_format() {
-        let ctx = HashMap::new();
+        let ctx = Context::new();
         let result = resolve_template("{{$uuid}}", &ctx);
-        assert_eq!(result.len(), 36); // UUID format: 8-4-4-4-12
+        assert_eq!(result.len(), 36);
         assert!(result.contains('-'));
     }
 
     #[test]
     fn timestamp_is_numeric() {
-        let ctx = HashMap::new();
+        let ctx = Context::new();
         let result = resolve_template("{{$timestamp}}", &ctx);
         assert!(result.parse::<i64>().is_ok());
     }
 
     #[test]
     fn missing_variable_becomes_empty() {
-        let ctx = HashMap::new();
+        let ctx = Context::new();
         assert_eq!(resolve_template("{{missing}}", &ctx), "");
     }
 
@@ -165,7 +206,27 @@ mod tests {
         overrides.insert("base_url".into(), "https://override.com".into());
 
         let ctx = build_initial_context(Some(&vars), &overrides);
-        assert_eq!(ctx.get("base_url").unwrap(), "https://override.com");
-        assert_eq!(ctx.get("timeout").unwrap(), "5000");
+        assert_eq!(
+            ctx.get("base_url").unwrap(),
+            &Value::String("https://override.com".into())
+        );
+        // "5000" should be parsed as a number
+        assert_eq!(ctx.get("timeout").unwrap(), &Value::Number(5000.into()));
+    }
+
+    #[test]
+    fn parse_scalar_bool() {
+        assert_eq!(parse_scalar("true"), Value::Bool(true));
+        assert_eq!(parse_scalar("false"), Value::Bool(false));
+    }
+
+    #[test]
+    fn parse_scalar_integer() {
+        assert_eq!(parse_scalar("42"), Value::Number(42.into()));
+    }
+
+    #[test]
+    fn parse_scalar_string() {
+        assert_eq!(parse_scalar("hello"), Value::String("hello".to_owned()));
     }
 }

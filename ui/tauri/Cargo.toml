@@ -31,7 +31,7 @@ uuid = { version = "1", features = ["v4"] }
 
 # ACE engine crates (in-process; no subprocess).
 model = { path = "../../crates/model" }
-runner = { path = "../../crates/runner", features = ["specta"] }
+executor = { path = "../../crates/executor", features = ["specta"] }
 ace-core = { path = "../../crates/core", features = ["specta"] }
 
 # TypeScript binding generation for Tauri commands.

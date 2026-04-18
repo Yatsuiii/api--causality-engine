@@ -5,22 +5,55 @@
 [![Docker](https://img.shields.io/badge/ghcr.io-yatsuiii%2Face-blue?logo=docker)](https://github.com/Yatsuiii/api--causality-engine/pkgs/container/ace)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Workflow-first API validation engine for flows that span multiple requests. You write a YAML state graph describing each step, assertions, extracted values, and transitions. ACE validates it before execution and then runs it deterministically.
+**Your CI says "assertion failed." It doesn't say which request, which step, or what the system state was when it broke.**
 
-No cloud account. No collections syncing to someone's server. Just a binary and a YAML file — or a desktop UI if you prefer clicking around.
+ACE fixes that. You describe your API workflow as a state graph — login, create, verify, retry — and ACE validates the graph structure before running it, then executes it step by step and tells you exactly where and why it failed.
+
+```
+error[E003]: step 'create_order' — status == 201, got 503
+  --> workflow.yaml:31
+  [login] --login--> [create_order] ✗ (503) 89ms
+    ✗ status == 201 — expected: 201, got: 503
+```
+
+Not a Postman replacement. A workflow validation engine for multi-step API flows and CI/CD pipelines.
 
 ## Why
 
-Most API tools optimize for isolated requests. Production systems fail across request chains.
+Standard API tools test one request at a time. Production failures happen across request chains — the token extracted in step 1 is invalid by step 3, or a 202 in step 2 means you need to poll before step 4 can succeed. You can't catch that with isolated tests.
 
-ACE treats API interactions as deterministic state-machine workflows:
+ACE models the whole workflow as a state machine:
 
-- Model each step as a state
-- Define explicit transition edges
-- Validate graph integrity and variable references before execution
-- Produce trace output that shows failure origin, not just failure symptom
+- Every step is a state with explicit outgoing transitions
+- ACE validates the graph (dead ends, missing states, undefined variables) before it runs anything
+- Execution follows the graph; the trace shows every transition, assertion result, and extracted value
+- When something fails, you see the failure cause and where in the workflow it happened — not just a generic error code
 
-This is not a Postman replacement. It is a workflow validation and debugging engine designed for backend and CI/CD workflows.
+## Before / after
+
+**Typical CI output:**
+```
+FAIL
+AssertionError: expected 201 but got 503
+    at Object.<anonymous> (tests/api.test.js:47:5)
+```
+
+You know something failed. You don't know which user session, which prior request set up the broken state, or what was extracted along the way.
+
+**ACE output for the same failure:**
+```
+  [User 1] [login] --login--> [create_order] ✗ (503) 89ms
+    ✗ status == 201 — expected: 201, got: 503
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ Summary
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  User 1: FAILED — State 'create_order': no matching transition for status 503
+
+  FAIL
+```
+
+The transition, the HTTP status, and the assertion that failed are all in one line. The prior step (login → create_order) tells you the system state when it broke.
 
 ## Install
 
@@ -237,6 +270,29 @@ edges:
     default: true
 ```
 
+## Execution model
+
+**Sequential within a branch.** Each concurrency slot runs one step at a time, advancing through the graph by following edges. There is no parallelism within a single branch — `step B` only executes after `step A` completes and its transition is resolved.
+
+**Parallel across branches.** `--concurrency N` (or `-c N`) spawns N independent state machines, each with its own variable context. Variables extracted in one branch are invisible to others. This models N simultaneous users running the same workflow.
+
+```
+ace run scenario.yaml -c 10   # 10 users in parallel
+```
+
+**What happens on failure:**
+
+| Failure type | Behaviour |
+|---|---|
+| Network / timeout | Step is marked as an engine error. That branch stops immediately. Other branches continue. Exit code 2. |
+| Assertion failed | Recorded in the log. The transition still fires using edge conditions — an `assertions: failed` edge can route to a retry or error state. Exit code 1 if any branch ends with failures. |
+| No matching transition | Branch stops with `NoMatchingTransition`. Prevent this by always including a `default: true` edge from every state. |
+| `max_iterations` exceeded | Branch stops. Default limit is 100; set `max_iterations:` in the scenario to change it. |
+
+**Skipped steps.** A step is skipped when a `pre_request` hook's `skip_if:` resolves to `"true"`. ACE follows the `default` edge from that state and continues rather than stopping.
+
+**Variable scope.** Each branch starts with a fresh copy of the initial context (scenario `variables:` + CLI `--var` overrides). Extraction results and hook `set:` values are branch-local — mutations in one branch never bleed into another.
+
 ## Retry
 
 For flaky endpoints, add a retry block directly on the step:
@@ -318,7 +374,118 @@ The `examples/` directory has runnable scenarios:
 - `branching/` — conditional transitions based on response
 - `resilience/` — retry on failure, poll until ready
 - `workflows/` — CRUD lifecycle, first run scaffold
-- `workflows/login-create-retry.yaml` — login -> create -> retry branch -> verify
+
+### login-create-retry — a real workflow
+
+`examples/workflows/login-create-retry.yaml` models a common production pattern: authenticate, create a resource, retry if the server isn't ready, then verify.
+
+```yaml
+name: login create resource with retry
+initial_state: login
+max_iterations: 8
+terminal_states: [done, error]
+
+variables:
+  base_url: https://api.example.com
+  username: demo-user
+  password: "{{$env.DEMO_PASSWORD}}"
+
+steps:
+  - name: login
+    state: login
+    method: POST
+    url: "{{base_url}}/auth/login"
+    body: { username: "{{username}}", password: "{{password}}" }
+    assert:
+      - status: 200
+      - body: { token: { exists: true } }
+    extract:
+      token: token
+
+  - name: create_resource
+    state: create_resource
+    method: POST
+    url: "{{base_url}}/resources"
+    headers: { Authorization: "Bearer {{token}}" }
+    body: { name: "order-{{$timestamp}}", type: "demo" }
+    assert:
+      - status: { in: [201, 202] }
+      - body: { id: { exists: true } }
+    extract:
+      resource_id: id
+
+  # ... create_retry_wait, verify_resource, verify_retry_wait, auth_failed
+
+edges:
+  - { from: login,        to: create_resource,    when: { assertions: passed } }
+  - { from: login,        to: auth_failed,         default: true }
+  - { from: create_resource, to: verify_resource,  when: { assertions: passed } }
+  - { from: create_resource, to: create_retry_wait, default: true }
+  - { from: create_retry_wait, to: create_resource, default: true }
+  - { from: verify_resource, to: done,             when: { assertions: passed } }
+  - { from: verify_resource, to: verify_retry_wait, default: true }
+  - { from: verify_retry_wait, to: verify_resource, default: true }
+  - { from: auth_failed,  to: error,               default: true }
+```
+
+Validate before running:
+
+```
+$ ace validate examples/workflows/login-create-retry.yaml --graph
+
+Validation Report
+Scenario: login create resource with retry | Steps: 5 | Concurrency: 1
+
+State Graph
+  initial_state: login
+  mode: graph
+  [login] --(assertions)--> [create_resource]
+  [login] --(default)--> [auth_failed]
+  [create_resource] --(assertions)--> [verify_resource]
+  [create_resource] --(default)--> [create_retry_wait]
+  [create_retry_wait] --(default)--> [create_resource]
+  [verify_resource] --(assertions)--> [done]
+  [verify_resource] --(default)--> [verify_retry_wait]
+  [verify_retry_wait] --(default)--> [verify_resource]
+  [auth_failed] --(default)--> [error]
+
+Static Checks
+  ✓ no validation issues found
+```
+
+Run it (happy path — server returns 201 and resource is immediately ready):
+
+```
+$ DEMO_PASSWORD=secret ace run examples/workflows/login-create-retry.yaml
+
+Scenario: login create resource with retry
+Running: 1 user(s) × 5 step(s)
+
+  [User 1] [login] --login--> [create_resource] ✓ (200) 138ms
+    ✓ status == 200
+    ✓ body.token exists
+  [User 1] [create_resource] --create_resource--> [verify_resource] ✓ (201) 92ms
+    ✓ status in [201, 202]
+    ✓ body.id exists
+  [User 1] [verify_resource] --verify_resource--> [done] ✓ (200) 61ms
+    ✓ status == 200
+    ✓ body.id exists
+    ✓ body.status in ["ready", "active"]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ Summary
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  User 1: Final state: done (3 steps, 291ms)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Steps: 3 total, 3 passed, 0 failed
+  Timing: total 291ms | avg 97ms | p50 92ms | p95 138ms | p99 138ms
+
+  PASS
+
+  Log: execution_log.json
+```
+
+If the resource needs time to become ready, ACE automatically loops `verify_resource → verify_retry_wait → verify_resource` until assertions pass or `max_iterations` is hit — no polling logic to write.
 
 ## License
 

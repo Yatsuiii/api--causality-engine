@@ -1,6 +1,8 @@
 name: branching API flow
 initial_state: login
 
+terminal_states: [done, error]
+
 variables:
   base_url: https://jsonplaceholder.typicode.com
 

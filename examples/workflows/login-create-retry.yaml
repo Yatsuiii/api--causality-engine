@@ -1,6 +1,7 @@
 name: login create resource with retry
 initial_state: login
 max_iterations: 8
+terminal_states: [done, error]
 
 variables:
   base_url: https://api.example.com

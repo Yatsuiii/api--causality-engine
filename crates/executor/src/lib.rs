@@ -1,7 +1,8 @@
 use ace_core::{
     assertions::{self, AssertionResult},
+    graph::Graph,
     jsonpath,
-    variables::{self, resolve_template},
+    variables::{self, Context, resolve_template, value_to_string},
 };
 use ace_http::{
     Client, ClientConfig, HttpResponse, MultipartField, MultipartValue, RequestOptions,
@@ -136,7 +137,7 @@ pub struct RunConfig {
 async fn fetch_oauth2_token(
     client: &Client,
     oauth: &model::OAuth2Config,
-    context: &HashMap<String, String>,
+    context: &Context,
 ) -> Result<String, String> {
     let token_url = resolve_template(&oauth.token_url, context);
     let client_id = resolve_template(&oauth.client_id, context);
@@ -189,7 +190,7 @@ async fn fetch_oauth2_token(
 
 async fn execute_hooks(
     hooks: &[Hook],
-    context: &mut HashMap<String, String>,
+    context: &mut Context,
     task_id: usize,
     step_name: &str,
     phase: &str,
@@ -213,7 +214,7 @@ async fn execute_hooks(
                     value = value.as_str(),
                     "Hook set"
                 );
-                context.insert(key.clone(), value);
+                context.insert(key.clone(), serde_json::Value::String(value));
             }
         }
 
@@ -331,7 +332,7 @@ struct StepResult {
 async fn execute_step(
     step: &Step,
     client: &Client,
-    context: &mut HashMap<String, String>,
+    context: &mut Context,
     scenario_auth: Option<&Auth>,
     _config: &RunConfig,
     task_id: usize,
@@ -473,11 +474,7 @@ async fn execute_step(
     })
 }
 
-fn apply_auth(
-    auth: &Auth,
-    headers: &mut HashMap<String, String>,
-    context: &HashMap<String, String>,
-) {
+fn apply_auth(auth: &Auth, headers: &mut HashMap<String, String>, context: &Context) {
     if let Some(bearer) = &auth.bearer {
         let token = resolve_template(bearer, context);
         headers
@@ -498,7 +495,7 @@ fn apply_auth(
         headers.entry(header).or_insert(value);
     }
     if auth.oauth2.is_some()
-        && let Some(token) = context.get("$oauth_token")
+        && let Some(token) = context.get("$oauth_token").map(value_to_string)
     {
         headers
             .entry("Authorization".into())
@@ -509,7 +506,7 @@ fn apply_auth(
 fn extract_context(
     extract: &HashMap<String, String>,
     body: &str,
-    context: &mut HashMap<String, String>,
+    context: &mut Context,
     task_id: usize,
     step_name: &str,
 ) -> Result<(), RunError> {
@@ -527,12 +524,12 @@ fn extract_context(
     };
 
     for (context_key, json_path) in extract {
-        if let Some(value) = jsonpath::extract_string(&json, json_path) {
+        if let Some(value) = jsonpath::resolve(&json, json_path) {
             debug!(
                 task_id,
                 step = step_name,
                 key = context_key.as_str(),
-                value = value.as_str(),
+                value = %variables::value_to_string(&value),
                 "Extracted"
             );
             context.insert(context_key.clone(), value);
@@ -547,14 +544,6 @@ fn extract_context(
     }
 
     Ok(())
-}
-
-fn outgoing_edges<'a>(scenario: &'a Scenario, state: &str) -> Vec<&'a Edge> {
-    scenario
-        .edges
-        .iter()
-        .filter(|edge| edge.from == state)
-        .collect()
 }
 
 fn default_edge_target(edges: &[&Edge]) -> Option<String> {
@@ -588,7 +577,7 @@ async fn run_once(
         match fetch_oauth2_token(&client, oauth, &context).await {
             Ok(token) => {
                 debug!(task_id, "OAuth2 token acquired");
-                context.insert("$oauth_token".into(), token);
+                context.insert("$oauth_token".into(), serde_json::Value::String(token));
             }
             Err(e) => {
                 return (
@@ -602,11 +591,7 @@ async fn run_once(
         }
     }
 
-    let step_map: HashMap<String, &Step> = scenario
-        .steps
-        .iter()
-        .map(|s| (s.state.clone(), s))
-        .collect();
+    let graph = Graph::build(scenario);
 
     let run_start = std::time::Instant::now();
     let mut current_state = scenario.initial_state.clone();
@@ -623,8 +608,8 @@ async fn run_once(
             );
         }
 
-        let step = match step_map.get(&current_state) {
-            Some(step) => *step,
+        let step = match graph.step_for_state(&current_state) {
+            Some(step) => step,
             None => {
                 log.terminal_state = Some(current_state.clone());
                 break;
@@ -644,7 +629,7 @@ async fn run_once(
         .await
         {
             Ok(result) => {
-                let edges = outgoing_edges(scenario, &state_before);
+                let edges = graph.outgoing_edges(&state_before);
                 if edges.is_empty() {
                     log.total_duration_ms = run_start.elapsed().as_millis() as u64;
                     let owned_log = std::mem::take(&mut log);
@@ -658,7 +643,7 @@ async fn run_once(
                 }
 
                 let next_state = match evaluate_edges(
-                    &edges,
+                    edges,
                     &result.response,
                     &result.assertion_results,
                     &state_before,
@@ -702,8 +687,8 @@ async fn run_once(
                 current_state = next_state;
             }
             Err(RunError::Skipped { .. }) => {
-                let edges = outgoing_edges(scenario, &state_before);
-                let next_state = match default_edge_target(&edges) {
+                let edges = graph.outgoing_edges(&state_before);
+                let next_state = match default_edge_target(edges) {
                     Some(target) => target,
                     None => {
                         log.total_duration_ms = run_start.elapsed().as_millis() as u64;

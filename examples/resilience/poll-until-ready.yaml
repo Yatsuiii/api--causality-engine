@@ -1,6 +1,7 @@
 name: poll until ready
 initial_state: check_status
 max_iterations: 10
+terminal_states: [done]
 
 variables:
   base_url: https://jsonplaceholder.typicode.com

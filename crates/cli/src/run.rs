@@ -1,8 +1,8 @@
-use crate::error::{CliError, load_scenario_file};
+use crate::error::{CliError, print_diagnostics, read_file};
 use crate::report;
-use ace_core::validate::validate_scenario;
+use ace_core::validator::{LineIndex, validate_scenario};
 use colored::Colorize;
-use runner::RunConfig;
+use executor::RunConfig;
 use std::collections::HashMap;
 
 /// All arguments for the `run` subcommand, bundled into a struct.
@@ -45,11 +45,14 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
     }
 
     // Load & validate scenario
-    let scenario = load_scenario_file(&args.scenario)?;
+    let yaml = read_file(&args.scenario)?;
+    let scenario = model::load_scenario(&yaml).map_err(CliError::YamlParse)?;
+    let index = LineIndex::build(&yaml);
 
-    let issues = validate_scenario(&scenario);
-    if !issues.is_empty() {
-        return Err(CliError::Validation(issues));
+    let diagnostics = validate_scenario(&scenario, &index);
+    let (error_count, _) = print_diagnostics(&diagnostics, &args.scenario);
+    if error_count > 0 {
+        return Err(CliError::ValidationFailed);
     }
 
     // Back-compat: scenario-level `concurrency` is deprecated.
@@ -111,19 +114,19 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
         concurrency: Some(concurrency),
     };
 
-    let results = runner::run(&scenario, &config).await;
+    let results = executor::run(&scenario, &config).await;
     let has_assertion_failures = results.iter().any(|(log, r)| {
-        log.failed > 0 || matches!(r, Err(runner::RunError::AssertionFailed { .. }))
+        log.failed > 0 || matches!(r, Err(executor::RunError::AssertionFailed { .. }))
     });
     let has_engine_errors = results.iter().any(|(_, r)| {
         matches!(
             r,
-            Err(runner::RunError::HttpError { .. })
-                | Err(runner::RunError::MaxIterationsExceeded { .. })
-                | Err(runner::RunError::InvalidTransition { .. })
-                | Err(runner::RunError::NoMatchingTransition { .. })
-                | Err(runner::RunError::NoOutgoingEdges { .. })
-                | Err(runner::RunError::Skipped { .. })
+            Err(executor::RunError::HttpError { .. })
+                | Err(executor::RunError::MaxIterationsExceeded { .. })
+                | Err(executor::RunError::InvalidTransition { .. })
+                | Err(executor::RunError::NoMatchingTransition { .. })
+                | Err(executor::RunError::NoOutgoingEdges { .. })
+                | Err(executor::RunError::Skipped { .. })
         )
     });
 

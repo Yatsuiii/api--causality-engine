@@ -1,7 +1,7 @@
 use crate::error::{CliError, load_execution_log};
 use crate::report;
 use colored::Colorize;
-use runner::{ExecutionLog, RunError};
+use executor::{ExecutionLog, RunError};
 
 pub fn cmd_replay(path: &str) -> Result<(), CliError> {
     let logs = load_execution_log(path)?;
