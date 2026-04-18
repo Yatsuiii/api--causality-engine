@@ -17,8 +17,8 @@ dependencies = [
  "clap",
  "colored",
  "dotenvy",
+ "executor",
  "model",
- "runner",
  "serde_json",
  "serde_yaml",
  "tokio",
@@ -58,8 +58,8 @@ version = "0.1.5"
 dependencies = [
  "ace-core",
  "chrono",
+ "executor",
  "model",
- "runner",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -943,6 +943,23 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "executor"
+version = "0.1.5"
+dependencies = [
+ "ace-core",
+ "ace-http",
+ "base64 0.22.1",
+ "form_urlencoded",
+ "model",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "specta",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3167,23 +3184,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "runner"
-version = "0.1.5"
-dependencies = [
- "ace-core",
- "ace-http",
- "base64 0.22.1",
- "form_urlencoded",
- "model",
- "serde",
- "serde_json",
- "serde_yaml",
- "specta",
- "tokio",
- "tracing",
 ]
 
 [[package]]

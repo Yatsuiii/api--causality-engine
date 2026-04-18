@@ -13,8 +13,8 @@ pub enum CliError {
     YamlParse(serde_yaml::Error),
     /// JSON parsing failed.
     JsonParse(serde_json::Error),
-    /// Scenario validation found issues.
-    Validation(Vec<String>),
+    /// Scenario validation found issues (already printed to stderr).
+    ValidationFailed,
     /// One or more scenario steps failed at runtime (assertion failure).
     RunFailed,
     /// One or more scenario steps encountered an engine/network error.
@@ -29,13 +29,7 @@ impl fmt::Display for CliError {
             CliError::Io { path, source } => write!(f, "Failed to read '{}': {}", path, source),
             CliError::YamlParse(e) => write!(f, "Failed to parse scenario: {}", e),
             CliError::JsonParse(e) => write!(f, "Failed to parse JSON: {}", e),
-            CliError::Validation(issues) => {
-                writeln!(f, "Scenario validation failed:")?;
-                for issue in issues {
-                    writeln!(f, "  {} {}", "•".red(), issue)?;
-                }
-                Ok(())
-            }
+            CliError::ValidationFailed => write!(f, "Scenario validation failed"),
             CliError::RunFailed => write!(f, "One or more steps failed"),
             CliError::RunError => {
                 write!(f, "One or more steps encountered a network or engine error")
@@ -81,7 +75,7 @@ pub fn load_scenario_file(path: &str) -> Result<model::Scenario, CliError> {
 }
 
 /// Read + parse an execution-log JSON in one shot.
-pub fn load_execution_log(path: &str) -> Result<Vec<runner::ExecutionLog>, CliError> {
+pub fn load_execution_log(path: &str) -> Result<Vec<executor::ExecutionLog>, CliError> {
     let json = read_file(path)?;
     serde_json::from_str(&json).map_err(CliError::JsonParse)
 }
@@ -92,4 +86,36 @@ pub fn write_file(path: &str, contents: &str) -> Result<(), CliError> {
         path: path.to_string(),
         source: e,
     })
+}
+
+/// Print diagnostics to stderr and return (error_count, warn_count).
+pub fn print_diagnostics(
+    diagnostics: &[ace_core::validator::Diagnostic],
+    path: &str,
+) -> (usize, usize) {
+    use ace_core::validator::Severity;
+    let mut errors = 0usize;
+    let mut warnings = 0usize;
+    for d in diagnostics {
+        let (prefix, code_colored) = match d.severity {
+            Severity::Error => {
+                errors += 1;
+                ("error".red().bold(), format!("[{}]", d.code).red().bold())
+            }
+            Severity::Warning => {
+                warnings += 1;
+                (
+                    "warning".yellow().bold(),
+                    format!("[{}]", d.code).yellow().bold(),
+                )
+            }
+        };
+        eprintln!("{}{}: {}", prefix, code_colored, d.message);
+        if let Some(line) = d.line {
+            eprintln!("  {} {}:{}", "-->".cyan(), path, line);
+        } else {
+            eprintln!("  {} {}", "-->".cyan(), path);
+        }
+    }
+    (errors, warnings)
 }

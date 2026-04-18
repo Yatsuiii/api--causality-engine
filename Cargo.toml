@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/core",
-    "crates/runner",
+    "crates/executor",
     "crates/http",
     "crates/model",
     "crates/cli",

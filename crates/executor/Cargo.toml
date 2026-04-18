@@ -1,5 +1,5 @@
 [package]
-name = "runner"
+name = "executor"
 version = "0.1.5"
 edition = "2024"
 authors = ["Yatsuiii"]
