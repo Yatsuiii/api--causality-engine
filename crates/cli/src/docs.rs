@@ -108,8 +108,13 @@ pub fn cmd_docs(path: &str, output: Option<String>) -> Result<(), CliError> {
 
         if let Some(extract) = &step.extract {
             doc.push_str("**Extracts:**\n\n");
-            for (key, path) in extract {
-                doc.push_str(&format!("- `{}` ← `{}`\n", key, path));
+            for (key, spec) in extract {
+                let marker = if spec.is_required(false) {
+                    " *(required)*"
+                } else {
+                    ""
+                };
+                doc.push_str(&format!("- `{}` ← `{}`{}\n", key, spec.path(), marker));
             }
             doc.push('\n');
         }

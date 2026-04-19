@@ -246,9 +246,9 @@ fn extract_variables(step: &Step, response: &HttpResponse) -> HashMap<String, se
 
     let json: Option<serde_json::Value> = serde_json::from_str(&response.body).ok();
 
-    for (var_name, path) in extract_map {
+    for (var_name, spec) in extract_map {
         if let Some(ref json) = json
-            && let Some(value) = jsonpath::resolve(json, path)
+            && let Some(value) = jsonpath::resolve(json, spec.path())
         {
             extracted.insert(var_name.clone(), value);
         }

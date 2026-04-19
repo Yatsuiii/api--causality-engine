@@ -148,6 +148,50 @@ pub struct OAuth2Config {
     pub grant_type: Option<String>,
 }
 
+/// How a single `extract:` entry is specified. Accepts either a bare JSONPath
+/// string (permissive) or a struct with `path` + flags (fine-grained control).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ExtractSpec {
+    Path(String),
+    Detailed {
+        path: String,
+        #[serde(default)]
+        required: bool,
+    },
+}
+
+impl ExtractSpec {
+    pub fn path(&self) -> &str {
+        match self {
+            ExtractSpec::Path(p) => p,
+            ExtractSpec::Detailed { path, .. } => path,
+        }
+    }
+
+    /// Whether a missing JSONPath on this extract should fail the step.
+    /// Bare-string specs inherit from the global `--strict-extract` flag;
+    /// struct-form specs use their own `required` field.
+    pub fn is_required(&self, global_strict: bool) -> bool {
+        match self {
+            ExtractSpec::Path(_) => global_strict,
+            ExtractSpec::Detailed { required, .. } => *required,
+        }
+    }
+}
+
+impl From<&str> for ExtractSpec {
+    fn from(s: &str) -> Self {
+        ExtractSpec::Path(s.to_string())
+    }
+}
+
+impl From<String> for ExtractSpec {
+    fn from(s: String) -> Self {
+        ExtractSpec::Path(s)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Step {
     pub name: String,
@@ -161,7 +205,7 @@ pub struct Step {
     #[serde(default)]
     pub multipart: Option<Vec<MultipartFieldDef>>,
     #[serde(default)]
-    pub extract: Option<HashMap<String, String>>,
+    pub extract: Option<HashMap<String, ExtractSpec>>,
     #[serde(default)]
     pub retry: Option<RetryConfig>,
     #[serde(default, rename = "assert")]
@@ -269,7 +313,7 @@ impl Default for RetryConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Edge {
     pub from: String,
@@ -278,6 +322,22 @@ pub struct Edge {
     pub when: Option<TransitionCondition>,
     #[serde(default)]
     pub default: Option<bool>,
+    /// Higher values evaluated first among matching conditional edges. Ties
+    /// broken by list order. Unspecified edges default to 0.
+    #[serde(default)]
+    pub priority: Option<i32>,
+    /// Optional human-readable label surfaced in step logs when this edge is
+    /// traversed. Useful for distinguishing branches in traces.
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// Delay in milliseconds before the transition fires. The blessed pattern
+    /// for polling/backoff on self-loops.
+    #[serde(default)]
+    pub after_ms: Option<u64>,
+    /// Maximum times this edge may be traversed per scenario run. Exceeding
+    /// the cap returns `RunError::EdgeMaxTakesExceeded` before the transition.
+    #[serde(default)]
+    pub max_takes: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -448,5 +508,41 @@ steps:
 "#;
 
         assert!(load_scenario(yaml).is_err());
+    }
+
+    #[test]
+    fn extract_spec_bare_and_detailed_forms_parse() {
+        let yaml = r#"
+name: extract-shapes
+initial_state: fetch
+steps:
+  - name: fetch
+    state: fetch
+    method: GET
+    url: https://example.com
+    extract:
+      user_id: "$.id"
+      token:
+        path: "$.token"
+        required: true
+edges:
+  - from: fetch
+    to: done
+    default: true
+terminal_states:
+  - done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let extract = scenario.steps[0].extract.as_ref().unwrap();
+
+        let bare = extract.get("user_id").unwrap();
+        assert_eq!(bare.path(), "$.id");
+        assert!(!bare.is_required(false));
+        assert!(bare.is_required(true)); // inherits global strict
+
+        let detailed = extract.get("token").unwrap();
+        assert_eq!(detailed.path(), "$.token");
+        assert!(detailed.is_required(false)); // self-declared
+        assert!(detailed.is_required(true));
     }
 }

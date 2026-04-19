@@ -39,6 +39,7 @@ dependencies = [
  "serde_json",
  "specta",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
