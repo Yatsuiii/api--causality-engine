@@ -73,6 +73,10 @@ enum Commands {
         /// Number of parallel runs of the whole scenario (VUs)
         #[arg(short = 'c', long)]
         concurrency: Option<usize>,
+
+        /// Fail the step if any `extract:` JSONPath does not resolve (default: warn and continue)
+        #[arg(long)]
+        strict_extract: bool,
     },
 
     /// Replay a previous execution from a JSON log
@@ -173,6 +177,7 @@ async fn main() {
             insecure,
             proxy,
             concurrency,
+            strict_extract,
         } => {
             run::cmd_run(RunArgs {
                 scenario,
@@ -185,6 +190,7 @@ async fn main() {
                 insecure,
                 proxy,
                 concurrency,
+                strict_extract,
             })
             .await
         }

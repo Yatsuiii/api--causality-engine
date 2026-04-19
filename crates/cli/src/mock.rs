@@ -42,10 +42,11 @@ pub async fn cmd_mock(scenario_path: &str, port: u16) -> Result<(), CliError> {
         // are what is *sent*, not what is received, so they must not appear here.
         let mut mock_body = serde_json::Map::new();
         if let Some(extract) = &step.extract {
-            for json_key in extract.values() {
+            for spec in extract.values() {
+                let path = spec.path().to_string();
                 mock_body.insert(
-                    json_key.clone(),
-                    serde_json::Value::String(format!("mock_{}", json_key)),
+                    path.clone(),
+                    serde_json::Value::String(format!("mock_{}", path)),
                 );
             }
         }

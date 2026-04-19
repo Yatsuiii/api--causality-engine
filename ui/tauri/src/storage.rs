@@ -270,7 +270,7 @@ pub struct HistoryEntry {
     pub total_steps: usize,
     pub passed: usize,
     pub failed: usize,
-    pub log: runner::ExecutionLog,
+    pub log: executor::ExecutionLog,
 }
 
 pub fn list_history(state: &WorkspaceState, limit: usize) -> Result<Vec<HistoryEntry>, String> {
@@ -418,7 +418,7 @@ mod tests {
                 total_steps: 1,
                 passed: 1,
                 failed: 0,
-                log: runner::ExecutionLog::default(),
+                log: executor::ExecutionLog::default(),
             };
             save_history_entry(&state, &entry).unwrap();
         }

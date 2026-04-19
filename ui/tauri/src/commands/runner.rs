@@ -65,15 +65,15 @@ pub async fn run_scenario(
         }
     }
 
-    let config = runner::RunConfig::default();
+    let config = executor::RunConfig::default();
     let started = Utc::now();
 
-    let results = runner::run(&scenario, &config).await;
+    let results = executor::run(&scenario, &config).await;
 
     let (log, _outcome) = results
         .into_iter()
         .next()
-        .unwrap_or_else(|| (runner::ExecutionLog::default(), Ok(String::new())));
+        .unwrap_or_else(|| (executor::ExecutionLog::default(), Ok(String::new())));
 
     let scenario_name = scenario.name.clone();
     let scenario_file_str = path.to_string_lossy().into_owned();
@@ -111,7 +111,19 @@ pub fn validate_scenario(
     let yaml = fs::read_to_string(&path).map_err(|e| e.to_string())?;
     match model::load_scenario(&yaml) {
         Ok(scenario) => {
-            let errors = ace_core::validate::validate_scenario(&scenario);
+            let index = ace_core::validator::LineIndex::build(&yaml);
+            let diagnostics = ace_core::validator::validate_scenario(&scenario, &index);
+            let errors: Vec<String> = diagnostics
+                .iter()
+                .filter(|d| matches!(d.severity, ace_core::validator::Severity::Error))
+                .map(|d| {
+                    if let Some(line) = d.line {
+                        format!("{}: {} (line {})", d.code, d.message, line)
+                    } else {
+                        format!("{}: {}", d.code, d.message)
+                    }
+                })
+                .collect();
             Ok(ValidationResult {
                 valid: errors.is_empty(),
                 errors,

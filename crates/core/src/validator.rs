@@ -271,6 +271,47 @@ pub fn validate_scenario(scenario: &Scenario, index: &LineIndex) -> Vec<Diagnost
                         state_line,
                     ));
                 }
+                if edges.len() > 1 {
+                    for edge in edges {
+                        if edge.when.is_none() && !edge.default.unwrap_or(false) {
+                            issues.push(Diagnostic::error(
+                                "E007",
+                                format!(
+                                    "State '{}': unconditional edge to '{}' must be the only outgoing edge, or marked default: true — otherwise it shadows sibling edges non-deterministically",
+                                    step.state, edge.to
+                                ),
+                                index.from_edge(&edge.from),
+                            ));
+                        }
+                    }
+
+                    // E009: flag pairs of conditional edges with the same
+                    // exact status match — they overlap silently; list order
+                    // (or priority) decides which wins.
+                    for (i, a) in edges.iter().enumerate() {
+                        for b in edges.iter().skip(i + 1) {
+                            let (Some(ac), Some(bc)) = (&a.when, &b.when) else {
+                                continue;
+                            };
+                            if let (
+                                Some(StatusMatch::Exact(ac_code)),
+                                Some(StatusMatch::Exact(bc_code)),
+                            ) = (&ac.status, &bc.status)
+                                && ac_code == bc_code
+                                && a.priority == b.priority
+                            {
+                                issues.push(Diagnostic::warning(
+                                    "E009",
+                                    format!(
+                                        "State '{}': edges to '{}' and '{}' both match status {} with equal priority — order decides the winner; set `priority:` to disambiguate",
+                                        step.state, a.to, b.to, ac_code
+                                    ),
+                                    index.from_edge(&a.from),
+                                ));
+                            }
+                        }
+                    }
+                }
             }
             None if edges_declared => {
                 issues.push(Diagnostic::error(
@@ -325,6 +366,19 @@ pub fn validate_scenario(scenario: &Scenario, index: &LineIndex) -> Vec<Diagnost
                 "No terminal state is reachable from initial_state — workflow may loop forever",
                 None,
             ));
+        }
+
+        for step in &scenario.steps {
+            if !visited.contains(&step.state) {
+                issues.push(Diagnostic::warning(
+                    "E008",
+                    format!(
+                        "State '{}' is unreachable from initial_state — step '{}' will never execute",
+                        step.state, step.name
+                    ),
+                    index.state(&step.state),
+                ));
+            }
         }
     }
 
@@ -623,5 +677,96 @@ edges:
         assert!(index.step("start").is_some());
         assert!(index.state("start").is_some());
         assert!(index.from_edge("start").is_some());
+    }
+
+    #[test]
+    fn detects_unreachable_state_e008() {
+        let yaml = r#"
+name: dead code
+initial_state: start
+terminal_states: [done]
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+  - name: orphan
+    state: orphan
+    method: GET
+    url: http://example.com
+edges:
+  - from: start
+    to: done
+    default: true
+  - from: orphan
+    to: done
+    default: true
+"#;
+        let issues = validate(yaml);
+        assert!(
+            issues.iter().any(|d| d.code == "E008"),
+            "expected E008; got: {:?}",
+            issues.iter().map(|d| d.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn detects_overlapping_status_edges_e009() {
+        let yaml = r#"
+name: overlap
+initial_state: start
+terminal_states: [a, b]
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+edges:
+  - from: start
+    to: a
+    when:
+      status: 200
+  - from: start
+    to: b
+    when:
+      status: 200
+"#;
+        let issues = validate(yaml);
+        assert!(
+            issues.iter().any(|d| d.code == "E009"),
+            "expected E009; got: {:?}",
+            issues.iter().map(|d| d.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn priority_disambiguates_overlap_no_e009() {
+        let yaml = r#"
+name: prioritised
+initial_state: start
+terminal_states: [a, b]
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+edges:
+  - from: start
+    to: a
+    when:
+      status: 200
+    priority: 10
+  - from: start
+    to: b
+    when:
+      status: 200
+    priority: 1
+"#;
+        let issues = validate(yaml);
+        assert!(
+            !issues.iter().any(|d| d.code == "E009"),
+            "priority should suppress E009; got: {:?}",
+            issues.iter().map(|d| d.code).collect::<Vec<_>>()
+        );
     }
 }

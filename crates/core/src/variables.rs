@@ -1,5 +1,6 @@
 use serde_json::Value;
 use std::collections::HashMap;
+use tracing::warn;
 
 /// Typed variable context. Values preserve their native JSON type so that
 /// numeric comparisons (lt/gt) and equality checks work correctly without
@@ -40,8 +41,16 @@ pub fn resolve_template(template: &str, context: &Context) -> String {
 
         if let Some(end) = remaining[start..].find("}}") {
             let key = &remaining[start + 2..start + end];
-            let replacement = resolve_key(key.trim(), context);
-            result.push_str(&replacement);
+            let trimmed = key.trim();
+            match resolve_key(trimmed, context) {
+                Some(replacement) => result.push_str(&replacement),
+                None => {
+                    warn!(
+                        var = trimmed,
+                        "Template variable is undefined; interpolating empty string"
+                    );
+                }
+            }
             remaining = &remaining[start + end + 2..];
         } else {
             // No closing }}, just push the rest
@@ -54,26 +63,28 @@ pub fn resolve_template(template: &str, context: &Context) -> String {
     result
 }
 
-fn resolve_key(key: &str, context: &Context) -> String {
-    // Built-in dynamic variables
+/// Returns `None` when the variable is undefined (so callers can warn),
+/// `Some("")` when intentionally empty, `Some(value)` when resolved.
+fn resolve_key(key: &str, context: &Context) -> Option<String> {
+    // Built-in dynamic variables — always resolve
     if key == "$uuid" {
-        return uuid::Uuid::new_v4().to_string();
+        return Some(uuid::Uuid::new_v4().to_string());
     }
     if key == "$timestamp" {
-        return chrono::Utc::now().timestamp().to_string();
+        return Some(chrono::Utc::now().timestamp().to_string());
     }
     if key == "$randomInt" {
         use rand::Rng;
-        return rand::thread_rng().gen_range(0..=99999).to_string();
+        return Some(rand::thread_rng().gen_range(0..=99999).to_string());
     }
 
-    // Environment variable: $env.KEY
+    // Environment variable: $env.KEY — missing env → None (warn)
     if let Some(env_key) = key.strip_prefix("$env.") {
-        return std::env::var(env_key).unwrap_or_default();
+        return std::env::var(env_key).ok();
     }
 
-    // Context variable
-    context.get(key).map(value_to_string).unwrap_or_default()
+    // Context variable — missing key → None (warn)
+    context.get(key).map(value_to_string)
 }
 
 /// Resolve all templates in a HashMap of headers/values.

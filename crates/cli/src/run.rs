@@ -17,6 +17,7 @@ pub struct RunArgs {
     pub insecure: bool,
     pub proxy: Option<String>,
     pub concurrency: Option<usize>,
+    pub strict_extract: bool,
 }
 
 pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
@@ -112,6 +113,7 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
         insecure: args.insecure,
         proxy: args.proxy,
         concurrency: Some(concurrency),
+        strict_extract: args.strict_extract,
     };
 
     let results = executor::run(&scenario, &config).await;

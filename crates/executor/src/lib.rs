@@ -46,6 +46,16 @@ pub enum RunError {
     MaxIterationsExceeded {
         limit: u64,
     },
+    ExtractionMissing {
+        step: String,
+        key: String,
+        path: String,
+    },
+    EdgeMaxTakesExceeded {
+        state: String,
+        to: String,
+        limit: u32,
+    },
 }
 
 impl fmt::Display for RunError {
@@ -86,6 +96,20 @@ impl fmt::Display for RunError {
             RunError::MaxIterationsExceeded { limit } => {
                 write!(f, "Max iterations exceeded (limit: {})", limit)
             }
+            RunError::ExtractionMissing { step, key, path } => {
+                write!(
+                    f,
+                    "Step '{}': extraction '{}' failed — JSONPath '{}' did not resolve in response body",
+                    step, key, path
+                )
+            }
+            RunError::EdgeMaxTakesExceeded { state, to, limit } => {
+                write!(
+                    f,
+                    "State '{}': edge to '{}' exceeded max_takes ({})",
+                    state, to, limit
+                )
+            }
         }
     }
 }
@@ -117,6 +141,9 @@ pub struct StepLog {
     pub status: u16,
     pub duration_ms: u64,
     pub assertions: Vec<AssertionResult>,
+    /// Tag of the edge that fired the transition (if set on the edge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_edge_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_body: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,6 +159,9 @@ pub struct RunConfig {
     /// CLI-supplied concurrency override. Takes precedence over the deprecated
     /// `scenario.concurrency` field.
     pub concurrency: Option<usize>,
+    /// When true, a missing JSONPath in an `extract:` block causes the step to fail
+    /// instead of silently leaving the variable undefined.
+    pub strict_extract: bool,
 }
 
 async fn fetch_oauth2_token(
@@ -242,22 +272,45 @@ fn evaluate_edges(
     response: &HttpResponse,
     assertion_results: &[AssertionResult],
     current_state: &str,
-) -> Result<String, RunError> {
-    for edge in edges {
-        if let Some(condition) = &edge.when {
-            if matches_condition(condition, response, assertion_results) {
-                return Ok(edge.to.clone());
+    take_counts: &mut HashMap<usize, u32>,
+) -> Result<usize, RunError> {
+    let mut order: Vec<usize> = (0..edges.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(edges[i].priority.unwrap_or(0)));
+
+    let pick = |idx: usize, counts: &mut HashMap<usize, u32>| -> Result<usize, RunError> {
+        let edge = edges[idx];
+        if let Some(limit) = edge.max_takes {
+            let key = edge as *const Edge as usize;
+            let count = counts.entry(key).or_insert(0);
+            if *count >= limit {
+                return Err(RunError::EdgeMaxTakesExceeded {
+                    state: edge.from.clone(),
+                    to: edge.to.clone(),
+                    limit,
+                });
             }
-        } else if edge.default.unwrap_or(false) {
-            continue;
-        } else {
-            return Ok(edge.to.clone());
+            *count += 1;
+        }
+        Ok(idx)
+    };
+
+    for &i in &order {
+        if let Some(condition) = &edges[i].when
+            && matches_condition(condition, response, assertion_results)
+        {
+            return pick(i, take_counts);
         }
     }
 
-    for edge in edges {
-        if edge.default.unwrap_or(false) {
-            return Ok(edge.to.clone());
+    for &i in &order {
+        if edges[i].when.is_none() && edges[i].default.unwrap_or(false) {
+            return pick(i, take_counts);
+        }
+    }
+
+    for &i in &order {
+        if edges[i].when.is_none() && !edges[i].default.unwrap_or(false) {
+            return pick(i, take_counts);
         }
     }
 
@@ -430,7 +483,14 @@ async fn execute_step(
                     let all_passed = assertion_results.iter().all(|a| a.passed);
 
                     if let Some(extract) = &step.extract {
-                        extract_context(extract, &response.body, context, task_id, &step.name)?;
+                        extract_context(
+                            extract,
+                            &response.body,
+                            context,
+                            task_id,
+                            &step.name,
+                            _config.strict_extract,
+                        )?;
                     }
 
                     if let Some(hooks) = &step.post_request {
@@ -504,15 +564,24 @@ fn apply_auth(auth: &Auth, headers: &mut HashMap<String, String>, context: &Cont
 }
 
 fn extract_context(
-    extract: &HashMap<String, String>,
+    extract: &HashMap<String, model::ExtractSpec>,
     body: &str,
     context: &mut Context,
     task_id: usize,
     step_name: &str,
+    global_strict: bool,
 ) -> Result<(), RunError> {
     let json: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => {
+            let any_required = extract.values().any(|s| s.is_required(global_strict));
+            if any_required {
+                return Err(RunError::ExtractionMissing {
+                    step: step_name.to_string(),
+                    key: "<response>".into(),
+                    path: format!("response body is not valid JSON: {e}"),
+                });
+            }
             warn!(
                 task_id,
                 step = step_name,
@@ -523,7 +592,8 @@ fn extract_context(
         }
     };
 
-    for (context_key, json_path) in extract {
+    for (context_key, spec) in extract {
+        let json_path = spec.path();
         if let Some(value) = jsonpath::resolve(&json, json_path) {
             debug!(
                 task_id,
@@ -533,11 +603,17 @@ fn extract_context(
                 "Extracted"
             );
             context.insert(context_key.clone(), value);
+        } else if spec.is_required(global_strict) {
+            return Err(RunError::ExtractionMissing {
+                step: step_name.to_string(),
+                key: context_key.clone(),
+                path: json_path.to_string(),
+            });
         } else {
             warn!(
                 task_id,
                 step = step_name,
-                path = json_path.as_str(),
+                path = json_path,
                 "Extraction path not found"
             );
         }
@@ -596,6 +672,7 @@ async fn run_once(
     let run_start = std::time::Instant::now();
     let mut current_state = scenario.initial_state.clone();
     let max_iter = scenario.max_iterations.unwrap_or(100);
+    let mut edge_takes: HashMap<usize, u32> = HashMap::new();
 
     loop {
         log.iterations += 1;
@@ -642,19 +719,28 @@ async fn run_once(
                     );
                 }
 
-                let next_state = match evaluate_edges(
+                let edge_idx = match evaluate_edges(
                     edges,
                     &result.response,
                     &result.assertion_results,
                     &state_before,
+                    &mut edge_takes,
                 ) {
-                    Ok(next_state) => next_state,
+                    Ok(idx) => idx,
                     Err(e) => {
                         log.total_duration_ms = run_start.elapsed().as_millis() as u64;
                         let owned_log = std::mem::take(&mut log);
                         return (owned_log, Err(e));
                     }
                 };
+                let matched_edge = edges[edge_idx];
+                let next_state = matched_edge.to.clone();
+
+                if let Some(delay) = matched_edge.after_ms
+                    && delay > 0
+                {
+                    sleep(Duration::from_millis(delay)).await;
+                }
 
                 log.steps.push(StepLog {
                     step_name: step.name.clone(),
@@ -665,6 +751,7 @@ async fn run_once(
                     status: result.response.status,
                     duration_ms: result.response.duration_ms,
                     assertions: result.assertion_results.clone(),
+                    matched_edge_tag: matched_edge.tag.clone(),
                     request_body: if config.verbose {
                         result.body_sent
                     } else {
@@ -751,24 +838,31 @@ mod tests {
     use super::*;
     use model::{Edge, ValueCheck};
 
+    fn pick_to(edges: &[&Edge], resp: &HttpResponse) -> String {
+        let mut counts = HashMap::new();
+        let idx = evaluate_edges(edges, resp, &[], "start", &mut counts).unwrap();
+        edges[idx].to.clone()
+    }
+
+    fn resp(status: u16) -> HttpResponse {
+        HttpResponse {
+            status,
+            headers: HashMap::new(),
+            body: "{}".into(),
+            duration_ms: 1,
+        }
+    }
+
     #[test]
     fn evaluate_edges_uses_default_fallback() {
         let edges = [Edge {
             from: "start".into(),
             to: "done".into(),
-            when: None,
             default: Some(true),
+            ..Edge::default()
         }];
         let refs: Vec<&Edge> = edges.iter().collect();
-        let response = HttpResponse {
-            status: 200,
-            headers: HashMap::new(),
-            body: "{}".into(),
-            duration_ms: 1,
-        };
-
-        let next = evaluate_edges(&refs, &response, &[], "start").unwrap();
-        assert_eq!(next, "done");
+        assert_eq!(pick_to(&refs, &resp(200)), "done");
     }
 
     #[test]
@@ -785,24 +879,111 @@ mod tests {
                     body: None,
                     assertions: None,
                 }),
-                default: None,
+                ..Edge::default()
             },
             Edge {
                 from: "start".into(),
                 to: "done".into(),
-                when: None,
                 default: Some(true),
+                ..Edge::default()
             },
         ];
         let refs: Vec<&Edge> = edges.iter().collect();
-        let response = HttpResponse {
-            status: 500,
-            headers: HashMap::new(),
-            body: "{}".into(),
-            duration_ms: 1,
-        };
+        assert_eq!(pick_to(&refs, &resp(500)), "retry");
+    }
 
-        let next = evaluate_edges(&refs, &response, &[], "start").unwrap();
-        assert_eq!(next, "retry");
+    #[test]
+    fn evaluate_edges_treats_unconditional_as_implicit_default() {
+        let edges = [
+            Edge {
+                from: "start".into(),
+                to: "fallback".into(),
+                ..Edge::default()
+            },
+            Edge {
+                from: "start".into(),
+                to: "retry".into(),
+                when: Some(TransitionCondition {
+                    status: Some(StatusMatch::Exact(500)),
+                    body: None,
+                    assertions: None,
+                }),
+                ..Edge::default()
+            },
+        ];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        assert_eq!(pick_to(&refs, &resp(500)), "retry");
+        assert_eq!(pick_to(&refs, &resp(200)), "fallback");
+    }
+
+    #[test]
+    fn evaluate_edges_explicit_default_beats_implicit() {
+        let edges = [
+            Edge {
+                from: "start".into(),
+                to: "implicit".into(),
+                ..Edge::default()
+            },
+            Edge {
+                from: "start".into(),
+                to: "explicit".into(),
+                default: Some(true),
+                ..Edge::default()
+            },
+        ];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        assert_eq!(pick_to(&refs, &resp(200)), "explicit");
+    }
+
+    #[test]
+    fn evaluate_edges_respects_priority() {
+        // Two conditional edges both match status 500; higher priority wins
+        // regardless of list order.
+        let edges = [
+            Edge {
+                from: "start".into(),
+                to: "low_pri".into(),
+                when: Some(TransitionCondition {
+                    status: Some(StatusMatch::Exact(500)),
+                    body: None,
+                    assertions: None,
+                }),
+                priority: Some(1),
+                ..Edge::default()
+            },
+            Edge {
+                from: "start".into(),
+                to: "high_pri".into(),
+                when: Some(TransitionCondition {
+                    status: Some(StatusMatch::Exact(500)),
+                    body: None,
+                    assertions: None,
+                }),
+                priority: Some(10),
+                ..Edge::default()
+            },
+        ];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        assert_eq!(pick_to(&refs, &resp(500)), "high_pri");
+    }
+
+    #[test]
+    fn evaluate_edges_enforces_max_takes() {
+        let edges = [Edge {
+            from: "start".into(),
+            to: "retry".into(),
+            default: Some(true),
+            max_takes: Some(2),
+            ..Edge::default()
+        }];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        let mut counts = HashMap::new();
+        assert!(evaluate_edges(&refs, &resp(200), &[], "start", &mut counts).is_ok());
+        assert!(evaluate_edges(&refs, &resp(200), &[], "start", &mut counts).is_ok());
+        let third = evaluate_edges(&refs, &resp(200), &[], "start", &mut counts);
+        assert!(matches!(
+            third,
+            Err(RunError::EdgeMaxTakesExceeded { limit: 2, .. })
+        ));
     }
 }
