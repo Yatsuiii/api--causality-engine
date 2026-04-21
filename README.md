@@ -293,6 +293,48 @@ ace run scenario.yaml -c 10   # 10 users in parallel
 
 **Variable scope.** Each branch starts with a fresh copy of the initial context (scenario `variables:` + CLI `--var` overrides). Extraction results and hook `set:` values are branch-local — mutations in one branch never bleed into another.
 
+## Parallel fan-out
+
+Some steps are genuinely independent — loading a dashboard means fetching profile + posts + todos simultaneously, not one after another. Declare a `parallel:` edge to run branches concurrently and rejoin at a named state:
+
+```yaml
+edges:
+  - from: login
+    parallel:
+      branches:
+        - { name: profile, to: fetch_profile }
+        - { name: posts,   to: fetch_posts }
+        - { name: todos,   to: fetch_todos }
+      join: render
+      on_failure: fail_fast   # or all_complete
+```
+
+Each branch runs in its own context. On success, extracted values are merged under the branch name — `{{profile.username}}`, `{{posts.0.title}}`. Sibling branches can't see each other's variables.
+
+**`fail_fast`** surfaces the first branch error immediately and discards partial work. **`all_complete`** waits for every branch to finish, merges what succeeded, then reports errors. Pick based on whether a partial dashboard is useful or misleading.
+
+Nested fan-out is rejected by the validator (error E015). Branch targets, join targets, unknown names, and scope collisions are all caught before anything runs. See `examples/fanout/dashboard-load.yaml` for a runnable version.
+
+## Weighted routing
+
+For load-distribution scenarios — canaries, A/B traffic splits, chaos injection — attach `weight:` to multiple edges from the same state:
+
+```yaml
+edges:
+  - { from: pick_backend, to: stable, weight: 90, tag: stable-v1 }
+  - { from: pick_backend, to: canary, weight: 10, tag: canary-v2 }
+```
+
+Within the highest-priority tier of matching edges, ACE samples by cumulative distribution. All edges in a weighted group must declare a weight — mixing weighted and unweighted is rejected (E010).
+
+Runs are deterministic per `--seed`:
+
+```bash
+ace run scenario.yaml --seed 42    # same seed → same routing every time
+```
+
+The seed is echoed in `execution_log.json` so `ace replay` reproduces the exact path. See `examples/weighted/canary-rollout.yaml`.
+
 ## Retry
 
 For flaky endpoints, add a retry block directly on the step:
@@ -372,7 +414,9 @@ The `examples/` directory has runnable scenarios:
 
 - `auth/` — bearer token flow, login and profile fetch
 - `branching/` — conditional transitions based on response
+- `fanout/` — parallel branches that rejoin at a named state
 - `resilience/` — retry on failure, poll until ready
+- `weighted/` — canary rollout with seeded load split
 - `workflows/` — CRUD lifecycle, first run scaffold
 
 ### login-create-retry — a real workflow

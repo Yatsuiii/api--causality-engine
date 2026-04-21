@@ -1,0 +1,45 @@
+name: canary rollout load split
+initial_state: pick_backend
+terminal_states: [done]
+
+variables:
+  base_url: https://jsonplaceholder.typicode.com
+
+steps:
+  - name: pick_backend
+    state: pick_backend
+    method: GET
+    url: "{{base_url}}/posts/1"
+    assert:
+      - status: 200
+
+  - name: stable
+    state: stable
+    method: GET
+    url: "{{base_url}}/posts/1"
+    assert:
+      - status: 200
+
+  - name: canary
+    state: canary
+    method: GET
+    url: "{{base_url}}/posts/2"
+    assert:
+      - status: 200
+
+edges:
+  - from: pick_backend
+    to: stable
+    weight: 90
+    tag: stable-v1
+  - from: pick_backend
+    to: canary
+    weight: 10
+    tag: canary-v2
+
+  - from: stable
+    to: done
+    default: true
+  - from: canary
+    to: done
+    default: true

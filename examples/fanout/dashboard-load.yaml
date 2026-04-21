@@ -1,0 +1,73 @@
+name: dashboard parallel load
+initial_state: login
+terminal_states: [done, error]
+
+variables:
+  base_url: https://jsonplaceholder.typicode.com
+
+steps:
+  - name: login
+    state: login
+    method: POST
+    url: "{{base_url}}/posts"
+    body:
+      title: "session"
+      userId: 1
+    assert:
+      - status: 201
+    extract:
+      user_id: "userId"
+
+  - name: fetch_profile
+    state: fetch_profile
+    method: GET
+    url: "{{base_url}}/users/{{user_id}}"
+    assert:
+      - status: 200
+    extract:
+      username: "username"
+
+  - name: fetch_posts
+    state: fetch_posts
+    method: GET
+    url: "{{base_url}}/users/{{user_id}}/posts"
+    assert:
+      - status: 200
+
+  - name: fetch_todos
+    state: fetch_todos
+    method: GET
+    url: "{{base_url}}/users/{{user_id}}/todos"
+    assert:
+      - status: 200
+
+  - name: render
+    state: render
+    method: GET
+    url: "{{base_url}}/users/{{user_id}}"
+    assert:
+      - status: 200
+
+edges:
+  - from: login
+    parallel:
+      branches:
+        - { name: profile, to: fetch_profile }
+        - { name: posts,   to: fetch_posts }
+        - { name: todos,   to: fetch_todos }
+      join: render
+      on_failure: fail_fast
+
+  - from: fetch_profile
+    to: render
+    default: true
+  - from: fetch_posts
+    to: render
+    default: true
+  - from: fetch_todos
+    to: render
+    default: true
+
+  - from: render
+    to: done
+    default: true
