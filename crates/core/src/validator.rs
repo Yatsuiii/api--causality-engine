@@ -686,7 +686,23 @@ pub fn render_state_graph(scenario: &Scenario) -> Vec<String> {
     lines.push("mode: graph".to_string());
 
     for edge in &scenario.edges {
-        let label = if edge.default.unwrap_or(false) {
+        if let Some(fan_out) = &edge.parallel {
+            for branch in &fan_out.branches {
+                lines.push(format!(
+                    "[{}] ==parallel[{}]==> [{}]",
+                    edge.from, branch.name, branch.to
+                ));
+            }
+            lines.push(format!(
+                "[{}] ==parallel(join, on_failure={:?})==> [{}]",
+                edge.from,
+                fan_out.on_failure.unwrap_or_default(),
+                fan_out.join
+            ));
+            continue;
+        }
+
+        let mut label = if edge.default.unwrap_or(false) {
             "default".to_string()
         } else if let Some(cond) = &edge.when {
             let mut parts = Vec::new();
@@ -711,6 +727,13 @@ pub fn render_state_graph(scenario: &Scenario) -> Vec<String> {
         } else {
             "always".to_string()
         };
+
+        if let Some(w) = edge.weight {
+            label.push_str(&format!(", weight={w}"));
+        }
+        if let Some(tag) = &edge.tag {
+            label.push_str(&format!(", tag={tag}"));
+        }
 
         lines.push(format!("[{}] --({label})--> [{}]", edge.from, edge.to));
     }
