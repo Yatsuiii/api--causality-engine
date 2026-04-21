@@ -77,6 +77,10 @@ enum Commands {
         /// Fail the step if any `extract:` JSONPath does not resolve (default: warn and continue)
         #[arg(long)]
         strict_extract: bool,
+
+        /// Base RNG seed for weighted edge routing (deterministic replay)
+        #[arg(long)]
+        seed: Option<u64>,
     },
 
     /// Replay a previous execution from a JSON log
@@ -178,6 +182,7 @@ async fn main() {
             proxy,
             concurrency,
             strict_extract,
+            seed,
         } => {
             run::cmd_run(RunArgs {
                 scenario,
@@ -191,6 +196,7 @@ async fn main() {
                 proxy,
                 concurrency,
                 strict_extract,
+                seed,
             })
             .await
         }

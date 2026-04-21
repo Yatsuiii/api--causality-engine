@@ -364,6 +364,7 @@ mod tests {
                     actual: "200".into(),
                 }],
                 matched_edge_tag: None,
+                branch_path: None,
                 request_body: None,
                 response_body: None,
             }],
@@ -373,6 +374,7 @@ mod tests {
             failed: 0,
             iterations: 1,
             terminal_state: Some(state_after.into()),
+            seed: 0,
         }
     }
 
@@ -393,6 +395,7 @@ mod tests {
                     actual: "404".into(),
                 }],
                 matched_edge_tag: None,
+                branch_path: None,
                 request_body: None,
                 response_body: None,
             }],
@@ -402,6 +405,7 @@ mod tests {
             failed: 1,
             iterations: 1,
             terminal_state: None,
+            seed: 0,
         }
     }
 
@@ -434,6 +438,7 @@ mod tests {
             failed: 0,
             iterations: 0,
             terminal_state: None,
+            seed: 0,
         };
         assert_eq!(result_from_log(&log).unwrap(), "unknown");
     }

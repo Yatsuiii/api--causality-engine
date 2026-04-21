@@ -9,7 +9,11 @@ use ace_http::{
     build_client, send_request,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use model::{AssertionMatch, Auth, Edge, Hook, Scenario, StatusMatch, Step, TransitionCondition};
+use model::{
+    AssertionMatch, Auth, Edge, FailurePolicy, FanOut, Hook, Scenario, StatusMatch, Step,
+    TransitionCondition,
+};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
@@ -128,6 +132,10 @@ pub struct ExecutionLog {
     pub iterations: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_state: Option<String>,
+    /// Per-task RNG seed. Populated on every run so weighted-routing outcomes
+    /// can be reproduced by passing `--seed <value>` (with matching concurrency).
+    #[serde(default)]
+    pub seed: u64,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -144,6 +152,10 @@ pub struct StepLog {
     /// Tag of the edge that fired the transition (if set on the edge).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matched_edge_tag: Option<String>,
+    /// Ordered list of branch names this step executed under (outermost first).
+    /// None/empty = main line. Lets reporters group fan-out branch steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_path: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_body: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,6 +174,9 @@ pub struct RunConfig {
     /// When true, a missing JSONPath in an `extract:` block causes the step to fail
     /// instead of silently leaving the variable undefined.
     pub strict_extract: bool,
+    /// Base RNG seed for weighted edge routing. When unset, a random seed is
+    /// generated per run and echoed via `ExecutionLog.seed` for replay.
+    pub seed: Option<u64>,
 }
 
 async fn fetch_oauth2_token(
@@ -273,11 +288,9 @@ fn evaluate_edges(
     assertion_results: &[AssertionResult],
     current_state: &str,
     take_counts: &mut HashMap<usize, u32>,
+    rng: &mut StdRng,
 ) -> Result<usize, RunError> {
-    let mut order: Vec<usize> = (0..edges.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(edges[i].priority.unwrap_or(0)));
-
-    let pick = |idx: usize, counts: &mut HashMap<usize, u32>| -> Result<usize, RunError> {
+    let commit = |idx: usize, counts: &mut HashMap<usize, u32>| -> Result<usize, RunError> {
         let edge = edges[idx];
         if let Some(limit) = edge.max_takes {
             let key = edge as *const Edge as usize;
@@ -294,24 +307,71 @@ fn evaluate_edges(
         Ok(idx)
     };
 
-    for &i in &order {
-        if let Some(condition) = &edges[i].when
-            && matches_condition(condition, response, assertion_results)
-        {
-            return pick(i, take_counts);
+    // Collapse a candidate list to the highest-priority tier, then either
+    // weighted-sample (all have weights) or take the first in list order.
+    let choose = |candidates: Vec<usize>, rng: &mut StdRng| -> Option<usize> {
+        if candidates.is_empty() {
+            return None;
         }
+        let max_pri = candidates
+            .iter()
+            .map(|&i| edges[i].priority.unwrap_or(0))
+            .max()
+            .unwrap();
+        let top: Vec<usize> = candidates
+            .into_iter()
+            .filter(|&i| edges[i].priority.unwrap_or(0) == max_pri)
+            .collect();
+
+        if top.len() == 1 {
+            return Some(top[0]);
+        }
+        let all_weighted = top.iter().all(|&i| edges[i].weight.is_some());
+        if !all_weighted {
+            return Some(top[0]);
+        }
+        let total: u64 = top.iter().map(|&i| edges[i].weight.unwrap() as u64).sum();
+        if total == 0 {
+            return Some(top[0]);
+        }
+        let mut roll = rng.gen_range(0..total);
+        for &i in &top {
+            let w = edges[i].weight.unwrap() as u64;
+            if w > roll {
+                return Some(i);
+            }
+            roll -= w;
+        }
+        Some(top[top.len() - 1])
+    };
+
+    // Pass 1: conditional matches.
+    let cond: Vec<usize> = (0..edges.len())
+        .filter(|&i| {
+            edges[i]
+                .when
+                .as_ref()
+                .is_some_and(|c| matches_condition(c, response, assertion_results))
+        })
+        .collect();
+    if let Some(idx) = choose(cond, rng) {
+        return commit(idx, take_counts);
     }
 
-    for &i in &order {
-        if edges[i].when.is_none() && edges[i].default.unwrap_or(false) {
-            return pick(i, take_counts);
-        }
+    // Pass 2: explicit defaults.
+    let explicit: Vec<usize> = (0..edges.len())
+        .filter(|&i| edges[i].when.is_none() && edges[i].default.unwrap_or(false))
+        .collect();
+    if let Some(idx) = choose(explicit, rng) {
+        return commit(idx, take_counts);
     }
 
-    for &i in &order {
-        if edges[i].when.is_none() && !edges[i].default.unwrap_or(false) {
-            return pick(i, take_counts);
-        }
+    // Pass 3: implicit unconditional.
+    let implicit: Vec<usize> = (0..edges.len())
+        .filter(|&i| edges[i].when.is_none() && !edges[i].default.unwrap_or(false))
+        .collect();
+    if let Some(idx) = choose(implicit, rng) {
+        return commit(idx, take_counts);
     }
 
     Err(RunError::NoMatchingTransition {
@@ -674,6 +734,12 @@ async fn run_once(
     let max_iter = scenario.max_iterations.unwrap_or(100);
     let mut edge_takes: HashMap<usize, u32> = HashMap::new();
 
+    let base_seed = config.seed.unwrap_or_else(rand::random);
+    let task_seed = base_seed.wrapping_add(task_id as u64);
+    log.seed = task_seed;
+    let mut rng = StdRng::seed_from_u64(task_seed);
+    info!(task_id, base_seed, task_seed, "Weighted-routing seed");
+
     loop {
         log.iterations += 1;
         if log.iterations > max_iter {
@@ -725,6 +791,7 @@ async fn run_once(
                     &result.assertion_results,
                     &state_before,
                     &mut edge_takes,
+                    &mut rng,
                 ) {
                     Ok(idx) => idx,
                     Err(e) => {
@@ -734,6 +801,70 @@ async fn run_once(
                     }
                 };
                 let matched_edge = edges[edge_idx];
+
+                if let Some(fan_out) = &matched_edge.parallel {
+                    // Log the dispatch step itself before running branches.
+                    log.steps.push(StepLog {
+                        step_name: step.name.clone(),
+                        state_before: state_before.clone(),
+                        state_after: fan_out.join.clone(),
+                        method: step.method.as_str().to_string(),
+                        url: result.url_sent,
+                        status: result.response.status,
+                        duration_ms: result.response.duration_ms,
+                        assertions: result.assertion_results.clone(),
+                        matched_edge_tag: matched_edge.tag.clone(),
+                        branch_path: None,
+                        request_body: if config.verbose {
+                            result.body_sent
+                        } else {
+                            None
+                        },
+                        response_body: if config.verbose {
+                            Some(result.response.body.clone())
+                        } else {
+                            None
+                        },
+                    });
+                    log.total_steps += 1;
+                    if result.all_passed {
+                        log.passed += 1;
+                    } else {
+                        log.failed += 1;
+                    }
+
+                    if let Some(delay) = matched_edge.after_ms
+                        && delay > 0
+                    {
+                        sleep(Duration::from_millis(delay)).await;
+                    }
+
+                    match execute_fan_out(
+                        fan_out,
+                        scenario,
+                        &graph,
+                        &client,
+                        &mut context,
+                        config,
+                        task_id,
+                        task_seed,
+                        max_iter,
+                        &mut log,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            current_state = fan_out.join.clone();
+                            continue;
+                        }
+                        Err(e) => {
+                            log.total_duration_ms = run_start.elapsed().as_millis() as u64;
+                            let owned_log = std::mem::take(&mut log);
+                            return (owned_log, Err(e));
+                        }
+                    }
+                }
+
                 let next_state = matched_edge.to.clone();
 
                 if let Some(delay) = matched_edge.after_ms
@@ -752,6 +883,7 @@ async fn run_once(
                     duration_ms: result.response.duration_ms,
                     assertions: result.assertion_results.clone(),
                     matched_edge_tag: matched_edge.tag.clone(),
+                    branch_path: None,
                     request_body: if config.verbose {
                         result.body_sent
                     } else {
@@ -809,6 +941,273 @@ async fn run_once(
     (std::mem::take(&mut log), Ok(current_state))
 }
 
+#[derive(Default)]
+struct BranchStats {
+    iterations: u64,
+    total_steps: usize,
+    passed: usize,
+    failed: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_fan_out(
+    fan_out: &FanOut,
+    scenario: &Scenario,
+    graph: &Graph<'_>,
+    client: &Client,
+    context: &mut Context,
+    config: &RunConfig,
+    task_id: usize,
+    task_seed: u64,
+    max_iter: u64,
+    log: &mut ExecutionLog,
+) -> Result<(), RunError> {
+    let policy = fan_out.on_failure.unwrap_or_default();
+
+    info!(
+        task_id,
+        branches = fan_out.branches.len(),
+        join = fan_out.join.as_str(),
+        policy = ?policy,
+        "Fan-out dispatch"
+    );
+
+    let mut futures = Vec::with_capacity(fan_out.branches.len());
+    for (idx, branch) in fan_out.branches.iter().enumerate() {
+        let branch_seed = task_seed.wrapping_add(
+            (idx as u64)
+                .wrapping_add(1)
+                .wrapping_mul(0x9E3779B97F4A7C15),
+        );
+        let branch_rng = StdRng::seed_from_u64(branch_seed);
+        let branch_ctx = context.clone();
+        futures.push(run_branch(
+            scenario,
+            graph,
+            client,
+            branch_ctx,
+            config,
+            task_id,
+            branch.name.clone(),
+            branch.to.clone(),
+            fan_out.join.clone(),
+            branch_rng,
+            max_iter,
+        ));
+    }
+
+    let results = futures::future::join_all(futures).await;
+
+    let mut first_err: Option<RunError> = None;
+    let mut successful_branches: Vec<(String, Context)> = Vec::new();
+
+    for (branch, outcome) in fan_out.branches.iter().zip(results) {
+        let (br_ctx, br_steps, br_stats, br_result) = outcome;
+        log.steps.extend(br_steps);
+        log.iterations += br_stats.iterations;
+        log.total_steps += br_stats.total_steps;
+        log.passed += br_stats.passed;
+        log.failed += br_stats.failed;
+
+        match br_result {
+            Ok(()) => successful_branches.push((branch.name.clone(), br_ctx)),
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+    }
+
+    if let Some(e) = first_err {
+        // fail_fast: do not pollute parent context with partial branch data.
+        // all_complete: merge successful branches, then surface error.
+        if matches!(policy, FailurePolicy::AllComplete) {
+            merge_branches_into_parent(context, successful_branches);
+        }
+        return Err(e);
+    }
+
+    merge_branches_into_parent(context, successful_branches);
+    Ok(())
+}
+
+fn merge_branches_into_parent(parent: &mut Context, branches: Vec<(String, Context)>) {
+    for (name, ctx) in branches {
+        let mut obj = serde_json::Map::with_capacity(ctx.len());
+        for (k, v) in ctx {
+            obj.insert(k, v);
+        }
+        parent.insert(name, serde_json::Value::Object(obj));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_branch(
+    scenario: &Scenario,
+    graph: &Graph<'_>,
+    client: &Client,
+    mut context: Context,
+    config: &RunConfig,
+    task_id: usize,
+    branch_name: String,
+    start_state: String,
+    stop_state: String,
+    mut rng: StdRng,
+    max_iter: u64,
+) -> (Context, Vec<StepLog>, BranchStats, Result<(), RunError>) {
+    let mut steps_out: Vec<StepLog> = Vec::new();
+    let mut stats = BranchStats::default();
+    let mut current_state = start_state;
+    let mut edge_takes: HashMap<usize, u32> = HashMap::new();
+    let branch_path = vec![branch_name.clone()];
+
+    loop {
+        if current_state == stop_state {
+            return (context, steps_out, stats, Ok(()));
+        }
+        stats.iterations += 1;
+        if stats.iterations > max_iter {
+            return (
+                context,
+                steps_out,
+                stats,
+                Err(RunError::MaxIterationsExceeded { limit: max_iter }),
+            );
+        }
+
+        let step = match graph.step_for_state(&current_state) {
+            Some(s) => s,
+            None => {
+                return (
+                    context,
+                    steps_out,
+                    stats,
+                    Err(RunError::NoOutgoingEdges {
+                        step: format!("<branch {} terminal>", branch_name),
+                        state: current_state,
+                    }),
+                );
+            }
+        };
+
+        let state_before = current_state.clone();
+
+        match execute_step(
+            step,
+            client,
+            &mut context,
+            scenario.auth.as_ref(),
+            config,
+            task_id,
+        )
+        .await
+        {
+            Ok(result) => {
+                let edges = graph.outgoing_edges(&state_before);
+                if edges.is_empty() {
+                    return (
+                        context,
+                        steps_out,
+                        stats,
+                        Err(RunError::NoOutgoingEdges {
+                            step: step.name.clone(),
+                            state: state_before,
+                        }),
+                    );
+                }
+
+                let edge_idx = match evaluate_edges(
+                    edges,
+                    &result.response,
+                    &result.assertion_results,
+                    &state_before,
+                    &mut edge_takes,
+                    &mut rng,
+                ) {
+                    Ok(idx) => idx,
+                    Err(e) => return (context, steps_out, stats, Err(e)),
+                };
+
+                let matched_edge = edges[edge_idx];
+
+                // Nested fan-out is validator-blocked (E015). If we encounter
+                // one anyway, fail loudly — better than silent misbehavior.
+                if matched_edge.parallel.is_some() {
+                    return (
+                        context,
+                        steps_out,
+                        stats,
+                        Err(RunError::HttpError {
+                            step: step.name.clone(),
+                            message: "nested fan-out is not supported (validator E015)".into(),
+                        }),
+                    );
+                }
+
+                let next_state = matched_edge.to.clone();
+
+                if let Some(delay) = matched_edge.after_ms
+                    && delay > 0
+                {
+                    sleep(Duration::from_millis(delay)).await;
+                }
+
+                steps_out.push(StepLog {
+                    step_name: step.name.clone(),
+                    state_before: state_before.clone(),
+                    state_after: next_state.clone(),
+                    method: step.method.as_str().to_string(),
+                    url: result.url_sent,
+                    status: result.response.status,
+                    duration_ms: result.response.duration_ms,
+                    assertions: result.assertion_results.clone(),
+                    matched_edge_tag: matched_edge.tag.clone(),
+                    branch_path: Some(branch_path.clone()),
+                    request_body: if config.verbose {
+                        result.body_sent
+                    } else {
+                        None
+                    },
+                    response_body: if config.verbose {
+                        Some(result.response.body.clone())
+                    } else {
+                        None
+                    },
+                });
+
+                stats.total_steps += 1;
+                if result.all_passed {
+                    stats.passed += 1;
+                } else {
+                    stats.failed += 1;
+                }
+
+                current_state = next_state;
+            }
+            Err(RunError::Skipped { .. }) => {
+                let edges = graph.outgoing_edges(&state_before);
+                let next_state = match default_edge_target(edges) {
+                    Some(t) => t,
+                    None => {
+                        return (
+                            context,
+                            steps_out,
+                            stats,
+                            Err(RunError::NoOutgoingEdges {
+                                step: step.name.clone(),
+                                state: state_before,
+                            }),
+                        );
+                    }
+                };
+                current_state = next_state;
+            }
+            Err(e) => return (context, steps_out, stats, Err(e)),
+        }
+    }
+}
+
 pub async fn run(
     scenario: &Scenario,
     config: &RunConfig,
@@ -840,7 +1239,8 @@ mod tests {
 
     fn pick_to(edges: &[&Edge], resp: &HttpResponse) -> String {
         let mut counts = HashMap::new();
-        let idx = evaluate_edges(edges, resp, &[], "start", &mut counts).unwrap();
+        let mut rng = StdRng::seed_from_u64(0);
+        let idx = evaluate_edges(edges, resp, &[], "start", &mut counts, &mut rng).unwrap();
         edges[idx].to.clone()
     }
 
@@ -978,12 +1378,258 @@ mod tests {
         }];
         let refs: Vec<&Edge> = edges.iter().collect();
         let mut counts = HashMap::new();
-        assert!(evaluate_edges(&refs, &resp(200), &[], "start", &mut counts).is_ok());
-        assert!(evaluate_edges(&refs, &resp(200), &[], "start", &mut counts).is_ok());
-        let third = evaluate_edges(&refs, &resp(200), &[], "start", &mut counts);
+        let mut rng = StdRng::seed_from_u64(0);
+        assert!(evaluate_edges(&refs, &resp(200), &[], "start", &mut counts, &mut rng).is_ok());
+        assert!(evaluate_edges(&refs, &resp(200), &[], "start", &mut counts, &mut rng).is_ok());
+        let third = evaluate_edges(&refs, &resp(200), &[], "start", &mut counts, &mut rng);
         assert!(matches!(
             third,
             Err(RunError::EdgeMaxTakesExceeded { limit: 2, .. })
         ));
+    }
+
+    #[test]
+    fn evaluate_edges_weighted_is_deterministic_per_seed() {
+        // Two implicit unconditional edges with weights 70/30. With the same
+        // seed we must always pick the same edge; distribution over many rolls
+        // should roughly match weights.
+        let edges = [
+            Edge {
+                from: "start".into(),
+                to: "a".into(),
+                weight: Some(70),
+                ..Edge::default()
+            },
+            Edge {
+                from: "start".into(),
+                to: "b".into(),
+                weight: Some(30),
+                ..Edge::default()
+            },
+        ];
+        let refs: Vec<&Edge> = edges.iter().collect();
+
+        let mut rng1 = StdRng::seed_from_u64(42);
+        let mut rng2 = StdRng::seed_from_u64(42);
+        let mut counts1 = HashMap::new();
+        let mut counts2 = HashMap::new();
+        let first = evaluate_edges(&refs, &resp(200), &[], "start", &mut counts1, &mut rng1);
+        let second = evaluate_edges(&refs, &resp(200), &[], "start", &mut counts2, &mut rng2);
+        assert_eq!(first.unwrap(), second.unwrap());
+
+        // Roughly 70/30 distribution over 1000 rolls; allow ±10%.
+        let mut rng = StdRng::seed_from_u64(123);
+        let mut hits_a = 0;
+        for _ in 0..1000 {
+            let mut counts = HashMap::new();
+            let idx =
+                evaluate_edges(&refs, &resp(200), &[], "start", &mut counts, &mut rng).unwrap();
+            if edges[idx].to == "a" {
+                hits_a += 1;
+            }
+        }
+        assert!(
+            (600..=800).contains(&hits_a),
+            "expected ~700 hits on 'a', got {hits_a}"
+        );
+    }
+
+    #[test]
+    fn evaluate_edges_weighted_zero_total_falls_back_to_first() {
+        let edges = [
+            Edge {
+                from: "start".into(),
+                to: "a".into(),
+                weight: Some(0),
+                ..Edge::default()
+            },
+            Edge {
+                from: "start".into(),
+                to: "b".into(),
+                weight: Some(0),
+                ..Edge::default()
+            },
+        ];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        assert_eq!(pick_to(&refs, &resp(200)), "a");
+    }
+
+    #[test]
+    fn merge_branches_namespaces_context_under_branch_name() {
+        let mut parent: Context = HashMap::new();
+        parent.insert("shared".into(), serde_json::json!("top"));
+
+        let mut a: Context = HashMap::new();
+        a.insert("id".into(), serde_json::json!(1));
+        let mut b: Context = HashMap::new();
+        b.insert("id".into(), serde_json::json!(2));
+
+        merge_branches_into_parent(&mut parent, vec![("left".into(), a), ("right".into(), b)]);
+
+        assert_eq!(parent.get("shared"), Some(&serde_json::json!("top")));
+        let left = parent.get("left").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(left.get("id"), Some(&serde_json::json!(1)));
+        let right = parent.get("right").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(right.get("id"), Some(&serde_json::json!(2)));
+    }
+
+    // --- Minimal in-process HTTP mock for fan-out integration tests -------
+    // Each request shape hits a distinct URL; the server answers with a
+    // canned JSON body. Not a full HTTP parser — just enough to drive the
+    // executor against a real TcpListener.
+    async fn spawn_mock(
+        responses: std::sync::Arc<std::collections::HashMap<String, (u16, String)>>,
+    ) -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                let responses = responses.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = req
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or("/")
+                        .to_string();
+                    let (status, body) = responses
+                        .get(&path)
+                        .cloned()
+                        .unwrap_or((404, "{\"error\":\"unknown\"}".into()));
+                    let resp = format!(
+                        "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+
+        port
+    }
+
+    fn scenario_yaml_with_fanout(port: u16, policy: &str) -> String {
+        format!(
+            r#"
+name: fanout-test
+initial_state: dispatch
+terminal_states: [end]
+steps:
+  - name: kickoff
+    state: dispatch
+    method: GET
+    url: "http://127.0.0.1:{port}/kickoff"
+    extract:
+      kickoff_id: "id"
+  - name: left_call
+    state: branch_left
+    method: GET
+    url: "http://127.0.0.1:{port}/left"
+    extract:
+      value: "value"
+  - name: right_call
+    state: branch_right
+    method: GET
+    url: "http://127.0.0.1:{port}/right"
+    extract:
+      value: "value"
+  - name: done
+    state: joined
+    method: GET
+    url: "http://127.0.0.1:{port}/done"
+edges:
+  - from: dispatch
+    parallel:
+      branches:
+        - name: left
+          to: branch_left
+        - name: right
+          to: branch_right
+      join: joined
+      on_failure: {policy}
+  - from: branch_left
+    to: joined
+  - from: branch_right
+    to: joined
+  - from: joined
+    to: end
+"#
+        )
+    }
+
+    #[tokio::test]
+    async fn fan_out_happy_path_merges_namespaced_contexts() {
+        let mut responses = std::collections::HashMap::new();
+        responses.insert("/kickoff".into(), (200, r#"{"id":"abc"}"#.into()));
+        responses.insert("/left".into(), (200, r#"{"value":"L"}"#.into()));
+        responses.insert("/right".into(), (200, r#"{"value":"R"}"#.into()));
+        responses.insert("/done".into(), (200, r#"{}"#.into()));
+        let port = spawn_mock(std::sync::Arc::new(responses)).await;
+
+        let yaml = scenario_yaml_with_fanout(port, "all_complete");
+        let scenario: Scenario = serde_yaml::from_str(&yaml).unwrap();
+        let config = RunConfig {
+            seed: Some(1),
+            ..RunConfig::default()
+        };
+
+        let (log, result) = run_once(&scenario, 0, &config).await;
+        assert!(result.is_ok(), "run failed: {:?}", result.err());
+        // 4 visible steps: kickoff + 2 branch steps + done.
+        assert_eq!(log.total_steps, 4, "steps: {:#?}", log.steps);
+
+        // Branch steps carry branch_path tags.
+        let left_tagged = log.steps.iter().any(|s| {
+            s.branch_path
+                .as_ref()
+                .is_some_and(|p| p == &vec!["left".to_string()])
+        });
+        let right_tagged = log.steps.iter().any(|s| {
+            s.branch_path
+                .as_ref()
+                .is_some_and(|p| p == &vec!["right".to_string()])
+        });
+        assert!(left_tagged && right_tagged, "branch_path not tagged");
+    }
+
+    #[tokio::test]
+    async fn fan_out_fail_fast_surfaces_branch_error() {
+        let mut responses = std::collections::HashMap::new();
+        responses.insert("/kickoff".into(), (200, r#"{"id":"abc"}"#.into()));
+        responses.insert("/left".into(), (200, r#"{"value":"L"}"#.into()));
+        // /right returns an empty JSON body — the required extract will miss
+        // under strict_extract, producing a RunError::ExtractionMissing.
+        responses.insert("/right".into(), (200, r#"{}"#.into()));
+        responses.insert("/done".into(), (200, r#"{}"#.into()));
+        let port = spawn_mock(std::sync::Arc::new(responses)).await;
+
+        let yaml = scenario_yaml_with_fanout(port, "fail_fast");
+        let scenario: Scenario = serde_yaml::from_str(&yaml).unwrap();
+        let config = RunConfig {
+            seed: Some(1),
+            strict_extract: true,
+            ..RunConfig::default()
+        };
+
+        let (_log, result) = run_once(&scenario, 0, &config).await;
+        assert!(
+            matches!(result, Err(RunError::ExtractionMissing { .. })),
+            "expected ExtractionMissing, got {:?}",
+            result
+        );
     }
 }

@@ -317,6 +317,9 @@ impl Default for RetryConfig {
 #[serde(deny_unknown_fields)]
 pub struct Edge {
     pub from: String,
+    /// Target state for single-target edges. Omitted on fan-out edges; the
+    /// validator requires non-empty `to` whenever `parallel` is unset.
+    #[serde(default)]
     pub to: String,
     #[serde(default)]
     pub when: Option<TransitionCondition>,
@@ -338,6 +341,42 @@ pub struct Edge {
     /// the cap returns `RunError::EdgeMaxTakesExceeded` before the transition.
     #[serde(default)]
     pub max_takes: Option<u32>,
+    /// Relative weight for probabilistic routing among sibling edges in the
+    /// same routing group. When set on all siblings in a group, the executor
+    /// samples via a seeded RNG (reproducible via `RunConfig.seed`). Mixing
+    /// weighted and unweighted siblings is a validator error (E010).
+    #[serde(default)]
+    pub weight: Option<u32>,
+    /// Fan-out definition. When present, the edge spawns one concurrent branch
+    /// per entry in `parallel.branches`, each running its own sub-FSM, and
+    /// rejoins at `parallel.join`. Mutually exclusive with `to`, `when`,
+    /// `default`, `weight` (validator E018).
+    #[serde(default)]
+    pub parallel: Option<FanOut>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FanOut {
+    pub branches: Vec<Branch>,
+    pub join: String,
+    #[serde(default)]
+    pub on_failure: Option<FailurePolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Branch {
+    pub name: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FailurePolicy {
+    #[default]
+    FailFast,
+    AllComplete,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -508,6 +547,83 @@ steps:
 "#;
 
         assert!(load_scenario(yaml).is_err());
+    }
+
+    #[test]
+    fn parse_parallel_edge() {
+        let yaml = r#"
+name: fanout
+initial_state: start
+terminal_states: [done]
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+  - name: a
+    state: a
+    method: GET
+    url: http://example.com/a
+  - name: b
+    state: b
+    method: GET
+    url: http://example.com/b
+  - name: join
+    state: aggregate
+    method: GET
+    url: http://example.com/join
+edges:
+  - from: start
+    parallel:
+      branches:
+        - name: left
+          to: a
+        - name: right
+          to: b
+      join: aggregate
+      on_failure: all_complete
+  - from: a
+    to: aggregate
+    default: true
+  - from: b
+    to: aggregate
+    default: true
+  - from: aggregate
+    to: done
+    default: true
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let fan_out = scenario.edges[0].parallel.as_ref().unwrap();
+        assert_eq!(fan_out.branches.len(), 2);
+        assert_eq!(fan_out.branches[0].name, "left");
+        assert_eq!(fan_out.branches[1].to, "b");
+        assert_eq!(fan_out.join, "aggregate");
+        assert_eq!(fan_out.on_failure, Some(FailurePolicy::AllComplete));
+        assert!(scenario.edges[0].to.is_empty());
+    }
+
+    #[test]
+    fn parse_weighted_edges() {
+        let yaml = r#"
+name: weighted
+initial_state: start
+terminal_states: [a, b]
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+edges:
+  - from: start
+    to: a
+    weight: 70
+  - from: start
+    to: b
+    weight: 30
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        assert_eq!(scenario.edges[0].weight, Some(70));
+        assert_eq!(scenario.edges[1].weight, Some(30));
     }
 
     #[test]
