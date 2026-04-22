@@ -3,6 +3,7 @@ use crate::{
     graph::Graph,
     jsonpath,
     redact::Redactor,
+    trace::{EdgeEvaluation, EdgeOutcome, EdgeRejectReason},
     variables::{self, Context, resolve_template, value_to_string},
 };
 use ace_http::{
@@ -161,6 +162,11 @@ pub struct StepLog {
     pub request_body: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_body: Option<String>,
+    /// Per-edge causality trace. Each entry says whether an outgoing edge
+    /// matched, lost by priority/weight, or was rejected (and why). Empty
+    /// on terminal/skipped steps. Old logs deserialize fine (serde default).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edge_evaluations: Vec<EdgeEvaluation>,
 }
 
 #[derive(Debug, Clone)]
@@ -309,109 +315,225 @@ async fn execute_hooks(
     None
 }
 
+/// Result of transition evaluation.
+///
+/// `chosen` — index of the winning edge, or `None` when no pass matched.
+/// `evaluations` — every edge that was considered, with why it won/lost.
+/// Callers attach this to the `StepLog` so the CLI and `ace show` can render
+/// the causality ("edge→X lost: status=500, needed 200").
+struct EdgeDecision {
+    chosen: Option<usize>,
+    evaluations: Vec<EdgeEvaluation>,
+}
+
 fn evaluate_edges(
     edges: &[&Edge],
     response: &HttpResponse,
     assertion_results: &[AssertionResult],
-    current_state: &str,
     take_counts: &mut HashMap<usize, u32>,
     rng: &mut StdRng,
-) -> Result<usize, RunError> {
-    let commit = |idx: usize, counts: &mut HashMap<usize, u32>| -> Result<usize, RunError> {
-        let edge = edges[idx];
-        if let Some(limit) = edge.max_takes {
-            let key = edge as *const Edge as usize;
-            let count = counts.entry(key).or_insert(0);
-            if *count >= limit {
-                return Err(RunError::EdgeMaxTakesExceeded {
-                    state: edge.from.clone(),
-                    to: edge.to.clone(),
-                    limit,
-                });
-            }
-            *count += 1;
+) -> EdgeDecision {
+    let mut evaluations: Vec<EdgeEvaluation> = Vec::new();
+
+    // Helper: record an evaluation entry.
+    let make_eval = |idx: usize, outcome: EdgeOutcome| -> EdgeEvaluation {
+        EdgeEvaluation {
+            to: edges[idx].to.clone(),
+            tag: edges[idx].tag.clone(),
+            outcome,
         }
-        Ok(idx)
     };
 
-    // Collapse a candidate list to the highest-priority tier, then either
-    // weighted-sample (all have weights) or take the first in list order.
-    let choose = |candidates: Vec<usize>, rng: &mut StdRng| -> Option<usize> {
-        if candidates.is_empty() {
-            return None;
-        }
-        let max_pri = candidates
-            .iter()
-            .map(|&i| edges[i].priority.unwrap_or(0))
-            .max()
-            .unwrap();
-        let top: Vec<usize> = candidates
-            .into_iter()
-            .filter(|&i| edges[i].priority.unwrap_or(0) == max_pri)
-            .collect();
-
-        if top.len() == 1 {
-            return Some(top[0]);
-        }
-        let all_weighted = top.iter().all(|&i| edges[i].weight.is_some());
-        if !all_weighted {
-            return Some(top[0]);
-        }
-        let total: u64 = top.iter().map(|&i| edges[i].weight.unwrap() as u64).sum();
-        if total == 0 {
-            return Some(top[0]);
-        }
-        let mut roll = rng.gen_range(0..total);
-        for &i in &top {
-            let w = edges[i].weight.unwrap() as u64;
-            if w > roll {
-                return Some(i);
+    // Pass 1: conditional edges.
+    //
+    // For every `when`-gated edge, run `matches_condition`. Losers get
+    // `Rejected(reason)` recorded. Matchers become candidates for `choose`.
+    let mut cond_candidates: Vec<usize> = Vec::new();
+    for (i, edge) in edges.iter().enumerate() {
+        if let Some(cond) = edge.when.as_ref() {
+            match matches_condition(cond, response, assertion_results) {
+                Ok(()) => cond_candidates.push(i),
+                Err(reason) => {
+                    evaluations.push(make_eval(i, EdgeOutcome::Rejected(reason)));
+                }
             }
-            roll -= w;
         }
-        Some(top[top.len() - 1])
-    };
-
-    // Pass 1: conditional matches.
-    let cond: Vec<usize> = (0..edges.len())
-        .filter(|&i| {
-            edges[i]
-                .when
-                .as_ref()
-                .is_some_and(|c| matches_condition(c, response, assertion_results))
-        })
-        .collect();
-    if let Some(idx) = choose(cond, rng) {
-        return commit(idx, take_counts);
     }
 
-    // Pass 2: explicit defaults.
+    if let Some(chosen) = choose_from(&cond_candidates, edges, rng, &mut evaluations) {
+        return apply_max_takes(chosen, edges, take_counts, evaluations);
+    }
+
+    // Pass 2: explicit defaults. Unconditional, so no rejection reasons to
+    // record — they're only considered because pass 1 produced no winner.
     let explicit: Vec<usize> = (0..edges.len())
         .filter(|&i| edges[i].when.is_none() && edges[i].default.unwrap_or(false))
         .collect();
-    if let Some(idx) = choose(explicit, rng) {
-        return commit(idx, take_counts);
+    if let Some(chosen) = choose_from(&explicit, edges, rng, &mut evaluations) {
+        return apply_max_takes(chosen, edges, take_counts, evaluations);
     }
 
     // Pass 3: implicit unconditional.
     let implicit: Vec<usize> = (0..edges.len())
         .filter(|&i| edges[i].when.is_none() && !edges[i].default.unwrap_or(false))
         .collect();
-    if let Some(idx) = choose(implicit, rng) {
-        return commit(idx, take_counts);
+    if let Some(chosen) = choose_from(&implicit, edges, rng, &mut evaluations) {
+        return apply_max_takes(chosen, edges, take_counts, evaluations);
     }
 
-    Err(RunError::NoMatchingTransition {
-        state: current_state.to_string(),
-        status: response.status,
-    })
+    EdgeDecision {
+        chosen: None,
+        evaluations,
+    }
+}
+
+/// Pick a winner from a candidate list, filtering by max priority then by
+/// weighted roll. Losers are appended to `evaluations` with `LostPriority`
+/// or `LostWeightedRoll`. Returns the winner's edge index, or `None` if the
+/// candidate list was empty.
+fn choose_from(
+    candidates: &[usize],
+    edges: &[&Edge],
+    rng: &mut StdRng,
+    evaluations: &mut Vec<EdgeEvaluation>,
+) -> Option<usize> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let max_pri = candidates
+        .iter()
+        .map(|&i| edges[i].priority.unwrap_or(0))
+        .max()
+        .expect("non-empty");
+
+    // Separate top-tier from priority losers. Record the losers now.
+    let mut top: Vec<usize> = Vec::new();
+    for &i in candidates {
+        if edges[i].priority.unwrap_or(0) == max_pri {
+            top.push(i);
+        } else {
+            evaluations.push(EdgeEvaluation {
+                to: edges[i].to.clone(),
+                tag: edges[i].tag.clone(),
+                outcome: EdgeOutcome::LostPriority {
+                    winner_priority: max_pri,
+                },
+            });
+        }
+    }
+
+    if top.len() == 1 {
+        let winner = top[0];
+        evaluations.push(EdgeEvaluation {
+            to: edges[winner].to.clone(),
+            tag: edges[winner].tag.clone(),
+            outcome: EdgeOutcome::Matched,
+        });
+        return Some(winner);
+    }
+
+    let all_weighted = top.iter().all(|&i| edges[i].weight.is_some());
+    if !all_weighted {
+        // First-in-list wins; peers are neither matched nor rejected — leave
+        // them off the trace to avoid misleading entries.
+        let winner = top[0];
+        evaluations.push(EdgeEvaluation {
+            to: edges[winner].to.clone(),
+            tag: edges[winner].tag.clone(),
+            outcome: EdgeOutcome::Matched,
+        });
+        return Some(winner);
+    }
+
+    let total: u64 = top.iter().map(|&i| edges[i].weight.unwrap() as u64).sum();
+    if total == 0 {
+        let winner = top[0];
+        evaluations.push(EdgeEvaluation {
+            to: edges[winner].to.clone(),
+            tag: edges[winner].tag.clone(),
+            outcome: EdgeOutcome::Matched,
+        });
+        return Some(winner);
+    }
+
+    let mut roll = rng.gen_range(0..total);
+    let mut winner: Option<usize> = None;
+    for &i in &top {
+        let w = edges[i].weight.unwrap() as u64;
+        if winner.is_none() && w > roll {
+            winner = Some(i);
+        } else if winner.is_none() {
+            roll -= w;
+        }
+    }
+    // Fallback: last one wins if roll math somehow didn't land.
+    let winner = winner.unwrap_or(top[top.len() - 1]);
+
+    for &i in &top {
+        if i == winner {
+            evaluations.push(EdgeEvaluation {
+                to: edges[i].to.clone(),
+                tag: edges[i].tag.clone(),
+                outcome: EdgeOutcome::Matched,
+            });
+        } else {
+            evaluations.push(EdgeEvaluation {
+                to: edges[i].to.clone(),
+                tag: edges[i].tag.clone(),
+                outcome: EdgeOutcome::LostWeightedRoll {
+                    weight: edges[i].weight.unwrap(),
+                    total,
+                },
+            });
+        }
+    }
+
+    Some(winner)
+}
+
+/// Check `max_takes` on the chosen edge. If the cap is hit, flip its outcome
+/// to `MaxTakesExceeded` (so the CLI can render "✗ edge fired but capped")
+/// and set `chosen = None` — caller returns `RunError::EdgeMaxTakesExceeded`
+/// but now has the trace to explain it.
+fn apply_max_takes(
+    chosen: usize,
+    edges: &[&Edge],
+    take_counts: &mut HashMap<usize, u32>,
+    mut evaluations: Vec<EdgeEvaluation>,
+) -> EdgeDecision {
+    let edge = edges[chosen];
+    if let Some(limit) = edge.max_takes {
+        let key = edge as *const Edge as usize;
+        let count = take_counts.entry(key).or_insert(0);
+        if *count >= limit {
+            for ev in evaluations.iter_mut() {
+                if ev.to == edge.to
+                    && ev.tag == edge.tag
+                    && matches!(ev.outcome, EdgeOutcome::Matched)
+                {
+                    ev.outcome = EdgeOutcome::MaxTakesExceeded { limit };
+                    break;
+                }
+            }
+            return EdgeDecision {
+                chosen: None,
+                evaluations,
+            };
+        }
+        *count += 1;
+    }
+    EdgeDecision {
+        chosen: Some(chosen),
+        evaluations,
+    }
 }
 
 fn matches_condition(
     condition: &TransitionCondition,
     response: &HttpResponse,
     assertion_results: &[AssertionResult],
-) -> bool {
+) -> Result<(), EdgeRejectReason> {
     if let Some(status_match) = &condition.status {
         let matches = match status_match {
             StatusMatch::Exact(code) => response.status == *code,
@@ -421,7 +543,14 @@ fn matches_condition(
             }
         };
         if !matches {
-            return false;
+            let expected = match status_match {
+                StatusMatch::Exact(c) => c.to_string(),
+                StatusMatch::Complex(vc) => crate::trace::describe_value_check(vc),
+            };
+            return Err(EdgeRejectReason::StatusMismatch {
+                expected,
+                actual: response.status,
+            });
         }
     }
 
@@ -437,28 +566,38 @@ fn matches_condition(
                 })
                 .unwrap_or_default();
             if !crate::assertions::eval_value_check(check, resolved.as_ref(), &actual_str) {
-                return false;
+                return Err(EdgeRejectReason::BodyCheckFailed {
+                    path: path.clone(),
+                    expected: crate::trace::describe_value_check(check),
+                    actual: actual_str,
+                });
             }
         }
     }
 
     if let Some(assertion_match) = &condition.assertions {
-        let all_passed = assertion_results.iter().all(|a| a.passed);
+        let failed_indices: Vec<usize> = assertion_results
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !a.passed)
+            .map(|(i, _)| i)
+            .collect();
+        let all_passed = failed_indices.is_empty();
         match assertion_match {
             AssertionMatch::Passed => {
                 if !all_passed {
-                    return false;
+                    return Err(EdgeRejectReason::AssertionGateFailed { failed_indices });
                 }
             }
             AssertionMatch::Failed => {
                 if all_passed {
-                    return false;
+                    return Err(EdgeRejectReason::AssertionGateUnexpectedlyPassed);
                 }
             }
         }
     }
 
-    true
+    Ok(())
 }
 
 struct StepResult {
@@ -887,22 +1026,71 @@ async fn run_once(
                     );
                 }
 
-                let edge_idx = match evaluate_edges(
+                let decision = evaluate_edges(
                     edges,
                     &result.response,
                     &result.assertion_results,
-                    &state_before,
                     &mut edge_takes,
                     &mut rng,
-                ) {
-                    Ok(idx) => idx,
-                    Err(e) => {
+                );
+                let edge_idx = match decision.chosen {
+                    Some(idx) => idx,
+                    None => {
+                        // No-match OR max-takes cap hit. Push a synthetic
+                        // StepLog carrying the evaluations so the CLI can
+                        // render "why no edge fired" under this step.
+                        let capped_edge =
+                            decision.evaluations.iter().find_map(|e| match &e.outcome {
+                                EdgeOutcome::MaxTakesExceeded { limit } => {
+                                    Some((e.to.clone(), *limit))
+                                }
+                                _ => None,
+                            });
+                        let mut synth = StepLog {
+                            step_name: step.name.clone(),
+                            state_before: state_before.clone(),
+                            state_after: state_before.clone(),
+                            method: step.method.as_str().to_string(),
+                            url: result.url_sent,
+                            status: result.response.status,
+                            duration_ms: result.response.duration_ms,
+                            assertions: result.assertion_results.clone(),
+                            matched_edge_tag: None,
+                            branch_path: None,
+                            request_body: if config.verbose {
+                                result.body_sent
+                            } else {
+                                None
+                            },
+                            response_body: if config.verbose {
+                                Some(result.response.body.clone())
+                            } else {
+                                None
+                            },
+                            edge_evaluations: decision.evaluations,
+                        };
+                        apply_redaction(&mut synth, &redactor);
+                        log.steps.push(synth);
+                        log.total_steps += 1;
+                        log.failed += 1;
                         log.total_duration_ms = run_start.elapsed().as_millis() as u64;
                         let owned_log = std::mem::take(&mut log);
-                        return (owned_log, Err(e));
+                        let err = match capped_edge {
+                            Some((to, limit)) => RunError::EdgeMaxTakesExceeded {
+                                state: state_before.clone(),
+                                to,
+                                limit,
+                            },
+                            None => RunError::NoMatchingTransition {
+                                state: state_before.clone(),
+                                status: result.response.status,
+                            },
+                        };
+                        return (owned_log, Err(err));
                     }
                 };
                 let matched_edge = edges[edge_idx];
+                let evaluations = decision.evaluations;
 
                 if let Some(fan_out) = &matched_edge.parallel {
                     // Log the dispatch step itself before running branches.
@@ -927,6 +1115,7 @@ async fn run_once(
                         } else {
                             None
                         },
+                        edge_evaluations: evaluations,
                     };
                     apply_redaction(&mut dispatch_step, &redactor);
                     log.steps.push(dispatch_step);
@@ -1000,6 +1189,7 @@ async fn run_once(
                     } else {
                         None
                     },
+                    edge_evaluations: evaluations,
                 };
                 apply_redaction(&mut main_step, &redactor);
                 log.steps.push(main_step);
@@ -1232,19 +1422,70 @@ async fn run_branch(
                     );
                 }
 
-                let edge_idx = match evaluate_edges(
+                let decision = evaluate_edges(
                     edges,
                     &result.response,
                     &result.assertion_results,
-                    &state_before,
                     &mut edge_takes,
                     &mut rng,
-                ) {
-                    Ok(idx) => idx,
-                    Err(e) => return (context, steps_out, stats, Err(e)),
+                );
+                let edge_idx = match decision.chosen {
+                    Some(idx) => idx,
+                    None => {
+                        // No-match inside a branch. Push a synthetic StepLog
+                        // that carries the evaluations AND the branch_path so
+                        // the CLI can render which branch failed where.
+                        let capped_edge =
+                            decision.evaluations.iter().find_map(|e| match &e.outcome {
+                                EdgeOutcome::MaxTakesExceeded { limit } => {
+                                    Some((e.to.clone(), *limit))
+                                }
+                                _ => None,
+                            });
+                        let mut synth = StepLog {
+                            step_name: step.name.clone(),
+                            state_before: state_before.clone(),
+                            state_after: state_before.clone(),
+                            method: step.method.as_str().to_string(),
+                            url: result.url_sent,
+                            status: result.response.status,
+                            duration_ms: result.response.duration_ms,
+                            assertions: result.assertion_results.clone(),
+                            matched_edge_tag: None,
+                            branch_path: Some(branch_path.clone()),
+                            request_body: if config.verbose {
+                                result.body_sent
+                            } else {
+                                None
+                            },
+                            response_body: if config.verbose {
+                                Some(result.response.body.clone())
+                            } else {
+                                None
+                            },
+                            edge_evaluations: decision.evaluations,
+                        };
+                        apply_redaction(&mut synth, redactor);
+                        steps_out.push(synth);
+                        stats.total_steps += 1;
+                        stats.failed += 1;
+                        let err = match capped_edge {
+                            Some((to, limit)) => RunError::EdgeMaxTakesExceeded {
+                                state: state_before.clone(),
+                                to,
+                                limit,
+                            },
+                            None => RunError::NoMatchingTransition {
+                                state: state_before,
+                                status: result.response.status,
+                            },
+                        };
+                        return (context, steps_out, stats, Err(err));
+                    }
                 };
 
                 let matched_edge = edges[edge_idx];
+                let evaluations = decision.evaluations;
 
                 // Nested fan-out is validator-blocked (E015). If we encounter
                 // one anyway, fail loudly — better than silent misbehavior.
@@ -1289,6 +1530,7 @@ async fn run_branch(
                     } else {
                         None
                     },
+                    edge_evaluations: evaluations,
                 };
                 apply_redaction(&mut branch_step, redactor);
                 steps_out.push(branch_step);
@@ -1448,7 +1690,8 @@ mod tests {
     fn pick_to(edges: &[&Edge], resp: &HttpResponse) -> String {
         let mut counts = HashMap::new();
         let mut rng = StdRng::seed_from_u64(0);
-        let idx = evaluate_edges(edges, resp, &[], "start", &mut counts, &mut rng).unwrap();
+        let decision = evaluate_edges(edges, resp, &[], &mut counts, &mut rng);
+        let idx = decision.chosen.expect("expected a matching edge");
         edges[idx].to.clone()
     }
 
@@ -1587,13 +1830,24 @@ mod tests {
         let refs: Vec<&Edge> = edges.iter().collect();
         let mut counts = HashMap::new();
         let mut rng = StdRng::seed_from_u64(0);
-        assert!(evaluate_edges(&refs, &resp(200), &[], "start", &mut counts, &mut rng).is_ok());
-        assert!(evaluate_edges(&refs, &resp(200), &[], "start", &mut counts, &mut rng).is_ok());
-        let third = evaluate_edges(&refs, &resp(200), &[], "start", &mut counts, &mut rng);
-        assert!(matches!(
-            third,
-            Err(RunError::EdgeMaxTakesExceeded { limit: 2, .. })
-        ));
+        assert!(
+            evaluate_edges(&refs, &resp(200), &[], &mut counts, &mut rng)
+                .chosen
+                .is_some()
+        );
+        assert!(
+            evaluate_edges(&refs, &resp(200), &[], &mut counts, &mut rng)
+                .chosen
+                .is_some()
+        );
+        let third = evaluate_edges(&refs, &resp(200), &[], &mut counts, &mut rng);
+        assert!(third.chosen.is_none());
+        assert!(
+            third
+                .evaluations
+                .iter()
+                .any(|e| matches!(e.outcome, EdgeOutcome::MaxTakesExceeded { limit: 2 }))
+        );
     }
 
     #[test]
@@ -1621,17 +1875,18 @@ mod tests {
         let mut rng2 = StdRng::seed_from_u64(42);
         let mut counts1 = HashMap::new();
         let mut counts2 = HashMap::new();
-        let first = evaluate_edges(&refs, &resp(200), &[], "start", &mut counts1, &mut rng1);
-        let second = evaluate_edges(&refs, &resp(200), &[], "start", &mut counts2, &mut rng2);
-        assert_eq!(first.unwrap(), second.unwrap());
+        let first = evaluate_edges(&refs, &resp(200), &[], &mut counts1, &mut rng1);
+        let second = evaluate_edges(&refs, &resp(200), &[], &mut counts2, &mut rng2);
+        assert_eq!(first.chosen, second.chosen);
 
         // Roughly 70/30 distribution over 1000 rolls; allow ±10%.
         let mut rng = StdRng::seed_from_u64(123);
         let mut hits_a = 0;
         for _ in 0..1000 {
             let mut counts = HashMap::new();
-            let idx =
-                evaluate_edges(&refs, &resp(200), &[], "start", &mut counts, &mut rng).unwrap();
+            let idx = evaluate_edges(&refs, &resp(200), &[], &mut counts, &mut rng)
+                .chosen
+                .expect("weighted pick always selects");
             if edges[idx].to == "a" {
                 hits_a += 1;
             }
@@ -1660,6 +1915,225 @@ mod tests {
         ];
         let refs: Vec<&Edge> = edges.iter().collect();
         assert_eq!(pick_to(&refs, &resp(200)), "a");
+    }
+
+    // ---- Causality trace (edge_evaluations) ----------------------------
+
+    #[test]
+    fn trace_records_rejected_edges_on_no_match() {
+        // Two conditional edges, neither matches 500 → NoMatchingTransition.
+        // Both should appear as Rejected(StatusMismatch) in evaluations.
+        let edges = [
+            Edge {
+                from: "start".into(),
+                to: "ok".into(),
+                when: Some(TransitionCondition {
+                    status: Some(StatusMatch::Exact(200)),
+                    body: None,
+                    assertions: None,
+                }),
+                ..Edge::default()
+            },
+            Edge {
+                from: "start".into(),
+                to: "auth_failed".into(),
+                when: Some(TransitionCondition {
+                    status: Some(StatusMatch::Exact(401)),
+                    body: None,
+                    assertions: None,
+                }),
+                ..Edge::default()
+            },
+        ];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        let mut counts = HashMap::new();
+        let mut rng = StdRng::seed_from_u64(0);
+        let decision = evaluate_edges(&refs, &resp(500), &[], &mut counts, &mut rng);
+        assert!(decision.chosen.is_none());
+        assert_eq!(decision.evaluations.len(), 2);
+        for ev in &decision.evaluations {
+            match &ev.outcome {
+                EdgeOutcome::Rejected(EdgeRejectReason::StatusMismatch { actual, .. }) => {
+                    assert_eq!(*actual, 500);
+                }
+                other => panic!("expected Rejected(StatusMismatch), got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn trace_matched_winner_is_recorded() {
+        let edges = [Edge {
+            from: "start".into(),
+            to: "done".into(),
+            default: Some(true),
+            ..Edge::default()
+        }];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        let mut counts = HashMap::new();
+        let mut rng = StdRng::seed_from_u64(0);
+        let decision = evaluate_edges(&refs, &resp(200), &[], &mut counts, &mut rng);
+        assert!(decision.chosen.is_some());
+        assert_eq!(decision.evaluations.len(), 1);
+        assert!(matches!(
+            decision.evaluations[0].outcome,
+            EdgeOutcome::Matched
+        ));
+        assert_eq!(decision.evaluations[0].to, "done");
+    }
+
+    #[test]
+    fn trace_priority_losers_recorded() {
+        let edges = [
+            Edge {
+                from: "start".into(),
+                to: "low_pri".into(),
+                when: Some(TransitionCondition {
+                    status: Some(StatusMatch::Exact(500)),
+                    body: None,
+                    assertions: None,
+                }),
+                priority: Some(1),
+                ..Edge::default()
+            },
+            Edge {
+                from: "start".into(),
+                to: "high_pri".into(),
+                when: Some(TransitionCondition {
+                    status: Some(StatusMatch::Exact(500)),
+                    body: None,
+                    assertions: None,
+                }),
+                priority: Some(10),
+                ..Edge::default()
+            },
+        ];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        let mut counts = HashMap::new();
+        let mut rng = StdRng::seed_from_u64(0);
+        let decision = evaluate_edges(&refs, &resp(500), &[], &mut counts, &mut rng);
+        assert_eq!(decision.chosen, Some(1));
+        let low = decision
+            .evaluations
+            .iter()
+            .find(|e| e.to == "low_pri")
+            .expect("low_pri entry");
+        assert!(matches!(
+            low.outcome,
+            EdgeOutcome::LostPriority {
+                winner_priority: 10
+            }
+        ));
+    }
+
+    #[test]
+    fn trace_weighted_losers_recorded() {
+        let edges = [
+            Edge {
+                from: "start".into(),
+                to: "a".into(),
+                weight: Some(70),
+                ..Edge::default()
+            },
+            Edge {
+                from: "start".into(),
+                to: "b".into(),
+                weight: Some(30),
+                ..Edge::default()
+            },
+        ];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        let mut counts = HashMap::new();
+        let mut rng = StdRng::seed_from_u64(42);
+        let decision = evaluate_edges(&refs, &resp(200), &[], &mut counts, &mut rng);
+        assert!(decision.chosen.is_some());
+        assert_eq!(decision.evaluations.len(), 2);
+        // Exactly one Matched, exactly one LostWeightedRoll, both with total=100.
+        let matched_count = decision
+            .evaluations
+            .iter()
+            .filter(|e| matches!(e.outcome, EdgeOutcome::Matched))
+            .count();
+        let lost_count = decision
+            .evaluations
+            .iter()
+            .filter(|e| matches!(e.outcome, EdgeOutcome::LostWeightedRoll { total: 100, .. }))
+            .count();
+        assert_eq!(matched_count, 1);
+        assert_eq!(lost_count, 1);
+    }
+
+    #[test]
+    fn trace_body_check_failure_recorded() {
+        let mut body_checks: HashMap<String, ValueCheck> = HashMap::new();
+        body_checks.insert(
+            "status".into(),
+            ValueCheck {
+                eq: Some(serde_json::json!("ok")),
+                ..ValueCheck::default()
+            },
+        );
+        let edges = [Edge {
+            from: "start".into(),
+            to: "ok".into(),
+            when: Some(TransitionCondition {
+                status: Some(StatusMatch::Exact(200)),
+                body: Some(body_checks),
+                assertions: None,
+            }),
+            ..Edge::default()
+        }];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        let mut counts = HashMap::new();
+        let mut rng = StdRng::seed_from_u64(0);
+        let bad_resp = HttpResponse {
+            status: 200,
+            headers: HashMap::new(),
+            body: r#"{"status":"error"}"#.into(),
+            duration_ms: 1,
+        };
+        let decision = evaluate_edges(&refs, &bad_resp, &[], &mut counts, &mut rng);
+        assert!(decision.chosen.is_none());
+        assert_eq!(decision.evaluations.len(), 1);
+        match &decision.evaluations[0].outcome {
+            EdgeOutcome::Rejected(EdgeRejectReason::BodyCheckFailed { path, actual, .. }) => {
+                assert_eq!(path, "status");
+                assert_eq!(actual, "error");
+            }
+            other => panic!("expected BodyCheckFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn trace_max_takes_cap_produces_no_chosen_with_recorded_outcome() {
+        let edges = [Edge {
+            from: "start".into(),
+            to: "retry".into(),
+            default: Some(true),
+            max_takes: Some(1),
+            ..Edge::default()
+        }];
+        let refs: Vec<&Edge> = edges.iter().collect();
+        let mut counts = HashMap::new();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        let first = evaluate_edges(&refs, &resp(200), &[], &mut counts, &mut rng);
+        assert!(first.chosen.is_some());
+        assert!(
+            first
+                .evaluations
+                .iter()
+                .any(|e| matches!(e.outcome, EdgeOutcome::Matched))
+        );
+
+        let second = evaluate_edges(&refs, &resp(200), &[], &mut counts, &mut rng);
+        assert!(second.chosen.is_none());
+        assert!(
+            second
+                .evaluations
+                .iter()
+                .any(|e| matches!(e.outcome, EdgeOutcome::MaxTakesExceeded { limit: 1 }))
+        );
     }
 
     #[test]

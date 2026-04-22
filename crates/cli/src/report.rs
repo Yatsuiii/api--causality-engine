@@ -1,6 +1,6 @@
 use crate::error::{CliError, load_execution_log};
 use colored::Colorize;
-use engine::{ExecutionLog, RunError, StepLog};
+use engine::{EdgeEvaluation, EdgeOutcome, EdgeRejectReason, ExecutionLog, RunError, StepLog};
 use std::io::Write;
 
 // ---------------------------------------------------------------------------
@@ -39,12 +39,90 @@ pub fn print_step_live(task_id: usize, step: &StepLog, verbose: bool) {
         }
     }
 
+    // Causality trace: show per-edge evaluation when there's something to
+    // explain (multiple edges considered, a loser, or the step failed). Skip
+    // the single-Matched-edge happy path to keep output tight.
+    let step_failed = step.assertions.iter().any(|a| !a.passed) || step.status >= 400;
+    let has_loser = step
+        .edge_evaluations
+        .iter()
+        .any(|e| !matches!(e.outcome, EdgeOutcome::Matched));
+    if !step.edge_evaluations.is_empty()
+        && (verbose || step_failed || has_loser || step.edge_evaluations.len() > 1)
+    {
+        for eval in &step.edge_evaluations {
+            println!("    {}", render_edge_evaluation(eval));
+        }
+    }
+
     if verbose {
         if let Some(body) = &step.request_body {
             println!("    {} {}", "→".dimmed(), truncate(body, 200).dimmed());
         }
         if let Some(body) = &step.response_body {
             println!("    {} {}", "←".dimmed(), truncate(body, 200).dimmed());
+        }
+    }
+}
+
+fn render_edge_evaluation(eval: &EdgeEvaluation) -> String {
+    let tag_suffix = eval
+        .tag
+        .as_ref()
+        .map(|t| format!(" ({})", t))
+        .unwrap_or_default();
+    let target = format!("→ {}{}", eval.to, tag_suffix);
+    match &eval.outcome {
+        EdgeOutcome::Matched => format!("{} {}", "✓".green().bold(), target.cyan()),
+        EdgeOutcome::Rejected(reason) => format!(
+            "{} {}  [{}]",
+            "✗".red().bold(),
+            target.red(),
+            render_reject_reason(reason).yellow()
+        ),
+        EdgeOutcome::LostPriority { winner_priority } => format!(
+            "{} {}  [{}]",
+            "⋯".dimmed(),
+            target.dimmed(),
+            format!("lost priority, winner={}", winner_priority).dimmed()
+        ),
+        EdgeOutcome::LostWeightedRoll { weight, total } => format!(
+            "{} {}  [{}]",
+            "⋯".dimmed(),
+            target.dimmed(),
+            format!("lost weighted roll {}/{}", weight, total).dimmed()
+        ),
+        EdgeOutcome::MaxTakesExceeded { limit } => format!(
+            "{} {}  [{}]",
+            "✗".red().bold(),
+            target.red(),
+            format!("max_takes limit {} reached", limit).yellow()
+        ),
+    }
+}
+
+fn render_reject_reason(reason: &EdgeRejectReason) -> String {
+    match reason {
+        EdgeRejectReason::StatusMismatch { expected, actual } => {
+            format!("status: expected {}, got {}", expected, actual)
+        }
+        EdgeRejectReason::BodyCheckFailed {
+            path,
+            expected,
+            actual,
+        } => {
+            let actual_display = if actual.is_empty() {
+                "<missing>".into()
+            } else {
+                actual.clone()
+            };
+            format!("body {}: {} (got {})", path, expected, actual_display)
+        }
+        EdgeRejectReason::AssertionGateFailed { failed_indices } => {
+            format!("gate: assertions {:?} failed", failed_indices)
+        }
+        EdgeRejectReason::AssertionGateUnexpectedlyPassed => {
+            "gate: expected failing assertions but all passed".into()
         }
     }
 }
@@ -367,6 +445,7 @@ mod tests {
                 branch_path: None,
                 request_body: None,
                 response_body: None,
+                edge_evaluations: Vec::new(),
             }],
             total_duration_ms: 50,
             total_steps: 1,
@@ -398,6 +477,7 @@ mod tests {
                 branch_path: None,
                 request_body: None,
                 response_body: None,
+                edge_evaluations: Vec::new(),
             }],
             total_duration_ms: 50,
             total_steps: 1,
