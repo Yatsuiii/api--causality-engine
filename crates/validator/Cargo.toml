@@ -1,0 +1,11 @@
+[package]
+name = "validator"
+version = "0.1.5"
+edition = "2024"
+authors = ["Yatsuiii"]
+license = "MIT"
+repository = "https://github.com/Yatsuiii/api--causality-engine"
+
+[dependencies]
+model = { path = "../model" }
+serde_json = "1"

@@ -1,6 +1,6 @@
 use crate::error::{CliError, print_diagnostics, read_file};
-use ace_core::validator::{LineIndex, render_state_graph, validate_scenario};
 use colored::Colorize;
+use validator::{LineIndex, render_state_graph, validate_scenario};
 
 pub fn cmd_validate(path: &str, show_graph: bool) -> Result<(), CliError> {
     let yaml = read_file(path)?;

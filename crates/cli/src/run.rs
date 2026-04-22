@@ -1,9 +1,9 @@
 use crate::error::{CliError, print_diagnostics, read_file};
 use crate::report;
-use ace_core::validator::{LineIndex, validate_scenario};
 use colored::Colorize;
-use executor::RunConfig;
+use engine::RunConfig;
 use std::collections::HashMap;
+use validator::{LineIndex, validate_scenario};
 
 /// All arguments for the `run` subcommand, bundled into a struct.
 pub struct RunArgs {
@@ -25,7 +25,7 @@ pub struct RunArgs {
 pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
     // Setup tracing
     let filter = if args.verbose {
-        "runner=debug,ace_core=debug,ace_http=debug,info"
+        "engine=debug,ace_http=debug,info"
     } else if args.quiet {
         "error"
     } else {
@@ -123,19 +123,19 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
             .map(|p| p.to_path_buf()),
     };
 
-    let results = executor::run(&scenario, &config).await;
+    let results = engine::run(&scenario, &config).await;
     let has_assertion_failures = results.iter().any(|(log, r)| {
-        log.failed > 0 || matches!(r, Err(executor::RunError::AssertionFailed { .. }))
+        log.failed > 0 || matches!(r, Err(engine::RunError::AssertionFailed { .. }))
     });
     let has_engine_errors = results.iter().any(|(_, r)| {
         matches!(
             r,
-            Err(executor::RunError::HttpError { .. })
-                | Err(executor::RunError::MaxIterationsExceeded { .. })
-                | Err(executor::RunError::InvalidTransition { .. })
-                | Err(executor::RunError::NoMatchingTransition { .. })
-                | Err(executor::RunError::NoOutgoingEdges { .. })
-                | Err(executor::RunError::Skipped { .. })
+            Err(engine::RunError::HttpError { .. })
+                | Err(engine::RunError::MaxIterationsExceeded { .. })
+                | Err(engine::RunError::InvalidTransition { .. })
+                | Err(engine::RunError::NoMatchingTransition { .. })
+                | Err(engine::RunError::NoOutgoingEdges { .. })
+                | Err(engine::RunError::Skipped { .. })
         )
     });
 

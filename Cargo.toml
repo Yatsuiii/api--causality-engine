@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "crates/core",
-    "crates/executor",
+    "crates/cli",
+    "crates/engine",
     "crates/http",
     "crates/model",
-    "crates/cli",
+    "crates/validator",
 ]
 resolver = "2"

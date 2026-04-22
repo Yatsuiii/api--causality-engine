@@ -12,37 +12,18 @@ checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
 name = "ace"
 version = "0.1.5"
 dependencies = [
- "ace-core",
  "ace-http",
  "clap",
  "colored",
  "dotenvy",
- "executor",
+ "engine",
  "model",
  "serde_json",
  "serde_yaml",
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "ace-core"
-version = "0.1.5"
-dependencies = [
- "ace-http",
- "base64 0.22.1",
- "chrono",
- "jsonschema",
- "model",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "serde_yaml",
- "specta",
- "tokio",
- "tracing",
- "uuid",
+ "validator",
 ]
 
 [[package]]
@@ -368,20 +349,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
-name = "equivalent"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
-
-[[package]]
-name = "executor"
+name = "engine"
 version = "0.1.5"
 dependencies = [
- "ace-core",
  "ace-http",
  "base64 0.22.1",
+ "chrono",
  "form_urlencoded",
  "futures",
+ "jsonschema",
  "model",
  "rand 0.8.5",
  "serde",
@@ -390,7 +366,14 @@ dependencies = [
  "specta",
  "tokio",
  "tracing",
+ "uuid",
 ]
+
+[[package]]
+name = "equivalent"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "fancy-regex"
@@ -2014,6 +1997,14 @@ dependencies = [
  "getrandom 0.4.2",
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "validator"
+version = "0.1.5"
+dependencies = [
+ "model",
+ "serde_json",
 ]
 
 [[package]]

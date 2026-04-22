@@ -1,7 +1,7 @@
 use crate::error::{CliError, load_execution_log};
 use crate::report;
 use colored::Colorize;
-use executor::{ExecutionLog, RunError};
+use engine::{ExecutionLog, RunError};
 
 /// Render a previously-recorded execution log to the terminal.
 ///

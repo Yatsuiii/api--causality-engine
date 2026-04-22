@@ -75,7 +75,7 @@ pub fn load_scenario_file(path: &str) -> Result<model::Scenario, CliError> {
 }
 
 /// Read + parse an execution-log JSON in one shot.
-pub fn load_execution_log(path: &str) -> Result<Vec<executor::ExecutionLog>, CliError> {
+pub fn load_execution_log(path: &str) -> Result<Vec<engine::ExecutionLog>, CliError> {
     let json = read_file(path)?;
     serde_json::from_str(&json).map_err(CliError::JsonParse)
 }
@@ -89,11 +89,8 @@ pub fn write_file(path: &str, contents: &str) -> Result<(), CliError> {
 }
 
 /// Print diagnostics to stderr and return (error_count, warn_count).
-pub fn print_diagnostics(
-    diagnostics: &[ace_core::validator::Diagnostic],
-    path: &str,
-) -> (usize, usize) {
-    use ace_core::validator::Severity;
+pub fn print_diagnostics(diagnostics: &[validator::Diagnostic], path: &str) -> (usize, usize) {
+    use validator::Severity;
     let mut errors = 0usize;
     let mut warnings = 0usize;
     for d in diagnostics {

@@ -1,4 +1,4 @@
-use ace_core::{
+use crate::{
     assertions::{self, AssertionResult, SchemaCache},
     graph::Graph,
     jsonpath,
@@ -417,7 +417,7 @@ fn matches_condition(
             StatusMatch::Exact(code) => response.status == *code,
             StatusMatch::Complex(vc) => {
                 let val = serde_json::Value::Number(serde_json::Number::from(response.status));
-                ace_core::assertions::eval_value_check(vc, Some(&val), &response.status.to_string())
+                crate::assertions::eval_value_check(vc, Some(&val), &response.status.to_string())
             }
         };
         if !matches {
@@ -436,7 +436,7 @@ fn matches_condition(
                     other => other.to_string(),
                 })
                 .unwrap_or_default();
-            if !ace_core::assertions::eval_value_check(check, resolved.as_ref(), &actual_str) {
+            if !crate::assertions::eval_value_check(check, resolved.as_ref(), &actual_str) {
                 return false;
             }
         }
