@@ -107,7 +107,7 @@ impl Redactor {
         // appears first. Missing the `#` case meant `https://h#frag` dropped
         // the fragment into the authority and lost it.
         let authority_end = rest
-            .find(|c| c == '/' || c == '?' || c == '#')
+            .find(['/', '?', '#'])
             .unwrap_or(rest.len());
         let path_and_query = &rest[authority_end..];
         let authority = &rest[..authority_end];
