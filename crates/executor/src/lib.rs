@@ -548,19 +548,19 @@ async fn execute_step(
     let method_str = step.method.as_str();
 
     for attempt in 1..=max_attempts {
-        if attempt > 1 {
-            if let Some(rc) = retry_cfg {
-                let delay_ms = compute_retry_delay(rc, attempt);
-                info!(
-                    task_id,
-                    step = step.name.as_str(),
-                    attempt,
-                    max_attempts,
-                    delay_ms,
-                    "Retrying"
-                );
-                sleep(Duration::from_millis(delay_ms)).await;
-            }
+        if attempt > 1
+            && let Some(rc) = retry_cfg
+        {
+            let delay_ms = compute_retry_delay(rc, attempt);
+            info!(
+                task_id,
+                step = step.name.as_str(),
+                attempt,
+                max_attempts,
+                delay_ms,
+                "Retrying"
+            );
+            sleep(Duration::from_millis(delay_ms)).await;
         }
 
         match send_request(client, method_str, &url, &opts).await {
@@ -1435,8 +1435,10 @@ mod tests {
 
     #[test]
     fn retry_predicate_explicit_overrides_default() {
-        let mut rc = RetryConfig::default();
-        rc.retry_on = vec![404, 503];
+        let rc = RetryConfig {
+            retry_on: vec![404, 503],
+            ..Default::default()
+        };
         assert!(rc.should_retry_status(404));
         assert!(rc.should_retry_status(503));
         assert!(!rc.should_retry_status(500)); // not in explicit list
