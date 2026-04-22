@@ -10,13 +10,11 @@
 ACE fixes that. You describe your API workflow as a state graph — login, create, verify, retry — and ACE validates the graph structure before running it, then executes it step by step and tells you exactly where and why it failed.
 
 ```
-error[E003]: step 'create_order' — status == 201, got 503
-  --> workflow.yaml:31
-  [login] --login--> [create_order] ✗ (503) 89ms
+  [User 1] [login] --login--> [create_order] ✗ (503) 89ms
     ✗ status == 201 — expected: 201, got: 503
 ```
 
-Not a Postman replacement. A workflow validation engine for multi-step API flows and CI/CD pipelines.
+Not a Postman replacement. A workflow-testing CLI for multi-step API flows and CI/CD pipelines.
 
 ## Why
 
@@ -91,7 +89,7 @@ ace run scenario.yaml --env .env --var base_url=https://staging.api.com
 ace run scenario.yaml --junit report.xml   # JUnit output for CI
 ace validate scenario.yaml         # catch graph/variable errors without running
 ace validate scenario.yaml --graph # print resolved state graph
-ace replay execution_log.json      # replay a previous run exactly
+ace show execution_log.json        # re-render a recorded run (no re-execution)
 ace report execution_log.json      # convert a run log to JSON or JUnit
 ace import collection.json         # convert a Postman collection to ACE YAML
 ace mock scenario.yaml             # spin up a mock server from a scenario
@@ -173,6 +171,28 @@ assert:
       content-type: { contains: "application/json" }
   - response_time_ms: { lt: 1000 }
 ```
+
+`response_time_ms` is measured end-to-end — from the moment the request is sent to the moment the full response body has been read. Slow-drip servers that flush headers fast but dribble the body cannot hide behind TTFB-only timing.
+
+### JSONSchema validation
+
+For responses where the full shape matters — not just a few fields — point an assertion at a JSONSchema instead of re-writing the shape in the ACE DSL. The schema can be inline or a file path (resolved relative to the scenario file):
+
+```yaml
+assert:
+  - status: 200
+  - schema: ./schemas/user.json        # file reference (JSON or YAML)
+
+# ...or inline when the schema is small:
+  - schema:
+      type: object
+      required: [id, email]
+      properties:
+        id: { type: integer }
+        email: { type: string, format: email }
+```
+
+Validation errors include the offending JSON path (e.g. `/email`) so you can tell *which* field broke the contract, not just that something did. Schema assertions compose with the existing `body:` checks — use schema for structure, `body:` for specific values you care about.
 
 ## Variables
 
@@ -333,7 +353,7 @@ Runs are deterministic per `--seed`:
 ace run scenario.yaml --seed 42    # same seed → same routing every time
 ```
 
-The seed is echoed in `execution_log.json` so `ace replay` reproduces the exact path. See `examples/weighted/canary-rollout.yaml`.
+The seed is echoed in `execution_log.json` so you can re-run with `--seed <value>` and hit the same routing decisions. See `examples/weighted/canary-rollout.yaml`.
 
 ## Retry
 
@@ -341,15 +361,34 @@ For flaky endpoints, add a retry block directly on the step:
 
 ```yaml
 steps:
-  - name: login
-    method: POST
-    url: "{{base_url}}/auth"
+  - name: fetch_order
+    method: GET
+    url: "{{base_url}}/orders/{{order_id}}"
     retry:
-      attempts: 3
-      delay_ms: 500
+      attempts: 5
+      delay_ms: 200           # initial delay
+      backoff: exponential    # or: fixed (default)
+      multiplier: 2.0         # each attempt: delay_ms * multiplier ^ (n-1)
+      max_delay_ms: 5000      # cap for any single wait
+      jitter: full            # none (default) | full | equal
+      retry_on: [502, 503]    # optional override; see default below
     assert:
       - status: 200
 ```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `attempts` | 3 | Max total tries including the first. |
+| `delay_ms` | 1000 | Wait before the first retry. Also the per-retry wait for `fixed`. |
+| `backoff` | `fixed` | `fixed` holds `delay_ms` constant. `exponential` multiplies each retry. |
+| `multiplier` | 2.0 | Growth factor for `exponential`. Ignored for `fixed`. |
+| `max_delay_ms` | 30000 | Upper bound on any single wait, even if exponential would exceed it. |
+| `jitter` | `none` | `full` picks uniformly in `[0, delay]`. `equal` picks in `[delay/2, delay]`. |
+| `retry_on` | `[408, 429, 500, 501, 502, 503, 504]` | Status codes that trigger a retry. Empty list means use this default. |
+
+**Behavior change:** earlier ACE versions retried on any 4xx/5xx. The current default only retries timeout-adjacent (408, 429) and server errors (5xx) — retrying a 401 or 404 won't make it succeed. If you need the old behavior for a specific step, set `retry_on` explicitly. Transport errors (connection refused, timeouts) always retry regardless.
+
+Jitter uses a thread-local RNG, so retry timing is not reproducible across runs, even with the same `--seed`.
 
 ## CI
 
@@ -374,11 +413,13 @@ JUnit output works with GitHub Actions, Jenkins, GitLab CI, and anything else th
 
 ## Mock server
 
-Run `ace mock scenario.yaml` to spin up a local HTTP server that responds to each step's endpoint with a canned response. Useful when you want to test a client without hitting a real API.
+Run `ace mock scenario.yaml` to spin up a local HTTP server that stubs each step's endpoint. The response body is a JSON stub shaped from the step's `extract:` keys (e.g. `extract: { user_id: id }` yields `{"id": "mock_user_id"}`); steps without `extract` return `{"ok": true}`. The status code is taken from the step's `assert: - status: N` if present, otherwise `200`.
 
 ```bash
 ace mock scenario.yaml --port 9000
 ```
+
+**Caveats:** this is a smoke-test stub, not a full mock framework — there's no request matching on body or headers, no stateful responses, and if two steps share a `METHOD path` only the first is served (later ones are logged as unreachable and skipped).
 
 ## Postman import
 

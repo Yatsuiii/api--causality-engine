@@ -150,7 +150,6 @@ pub async fn send_request(
 
     let start = Instant::now();
     let response = builder.send().await.map_err(|e| e.to_string())?;
-    let duration_ms = start.elapsed().as_millis() as u64;
 
     let status = response.status().as_u16();
 
@@ -162,7 +161,11 @@ pub async fn send_request(
         }
     }
 
+    // Include body-read time: `response_time_ms` assertions should reflect
+    // true end-to-end latency, not TTFB. A slow-drip server that flushes
+    // headers fast would otherwise appear fast here.
     let body = response.text().await.map_err(|e| e.to_string())?;
+    let duration_ms = start.elapsed().as_millis() as u64;
 
     Ok(HttpResponse {
         status,
@@ -226,5 +229,50 @@ mod tests {
             default_timeout_ms: None,
         };
         let _client = build_client(&config);
+    }
+
+    /// Regression: `duration_ms` must include body-read time, not just TTFB.
+    /// Assertion `response_time_ms` would otherwise lie for slow-drip servers.
+    #[tokio::test]
+    async fn duration_ms_includes_body_read_time() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let body_delay_ms: u64 = 150;
+
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+
+            // Drain request (up to blank line).
+            let mut buf = [0u8; 1024];
+            let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await;
+
+            // Flush headers immediately, then stall the body.
+            let headers = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n";
+            sock.write_all(headers).await.unwrap();
+            sock.flush().await.unwrap();
+
+            tokio::time::sleep(Duration::from_millis(body_delay_ms)).await;
+
+            sock.write_all(b"hello").await.unwrap();
+            sock.flush().await.unwrap();
+            let _ = sock.shutdown().await;
+        });
+
+        let client = default_client();
+        let opts = RequestOptions::default();
+        let url = format!("http://{}/slow-body", addr);
+        let resp = send_request(&client, "GET", &url, &opts).await.unwrap();
+
+        assert_eq!(resp.body, "hello");
+        assert!(
+            resp.duration_ms >= body_delay_ms,
+            "duration_ms should include body-read time (expected >= {}ms, got {}ms)",
+            body_delay_ms,
+            resp.duration_ms
+        );
     }
 }

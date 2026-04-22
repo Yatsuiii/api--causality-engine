@@ -324,9 +324,9 @@ pub fn validate_scenario(scenario: &Scenario, index: &LineIndex) -> Vec<Diagnost
                 let all_conditional = edges.iter().all(|e| e.when.is_some());
                 if !has_default && all_conditional {
                     issues.push(Diagnostic::warning(
-                        "E006",
+                        "E020",
                         format!(
-                            "State '{}': no default edge — execution may fail if no condition matches",
+                            "State '{}': all outgoing edges are conditional; add `default: true` on one to avoid NoMatchingTransition at runtime.",
                             step.state
                         ),
                         state_line,
@@ -1644,6 +1644,121 @@ edges:
         assert!(
             issues.iter().any(|d| d.code == "E010"),
             "expected E010; got: {:?}",
+            issues.iter().map(|d| d.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn conditional_only_edges_trigger_e020() {
+        // All outgoing edges have `when:`, no `default: true` — runtime will
+        // blow up with NoMatchingTransition if nothing matches.
+        let yaml = r#"
+name: conditional-only
+initial_state: start
+terminal_states: [a, b]
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+edges:
+  - from: start
+    to: a
+    when:
+      status: 200
+  - from: start
+    to: b
+    when:
+      status: 500
+"#;
+        let issues = validate(yaml);
+        assert!(
+            issues.iter().any(|d| d.code == "E020"),
+            "expected E020; got: {:?}",
+            issues.iter().map(|d| d.code).collect::<Vec<_>>()
+        );
+        let e020 = issues.iter().find(|d| d.code == "E020").unwrap();
+        assert_eq!(e020.severity, Severity::Warning);
+        assert!(
+            e020.message.contains("default: true"),
+            "E020 message should suggest the fix; got: {}",
+            e020.message
+        );
+    }
+
+    #[test]
+    fn explicit_default_suppresses_e020() {
+        let yaml = r#"
+name: conditional-with-default
+initial_state: start
+terminal_states: [a, b]
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+edges:
+  - from: start
+    to: a
+    when:
+      status: 200
+  - from: start
+    to: b
+    default: true
+"#;
+        let issues = validate(yaml);
+        assert!(
+            !issues.iter().any(|d| d.code == "E020"),
+            "explicit default should suppress E020; got: {:?}",
+            issues.iter().map(|d| d.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn single_unconditional_edge_does_not_trigger_e020() {
+        let yaml = r#"
+name: single-edge
+initial_state: start
+terminal_states: [done]
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+edges:
+  - from: start
+    to: done
+    default: true
+"#;
+        let issues = validate(yaml);
+        assert!(
+            !issues.iter().any(|d| d.code == "E020"),
+            "unconditional edge should not trigger E020; got: {:?}",
+            issues.iter().map(|d| d.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn terminal_state_with_no_outgoing_does_not_trigger_e020() {
+        // Terminal states have no outgoing edges — E020 must not fire.
+        let yaml = r#"
+name: terminal-ok
+initial_state: start
+terminal_states: [done]
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+edges:
+  - from: start
+    to: done
+    default: true
+"#;
+        let issues = validate(yaml);
+        assert!(
+            !issues.iter().any(|d| d.code == "E020"),
+            "terminal state should not trigger E020; got: {:?}",
             issues.iter().map(|d| d.code).collect::<Vec<_>>()
         );
     }

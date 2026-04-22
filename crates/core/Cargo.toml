@@ -7,7 +7,12 @@ license = "MIT"
 repository = "https://github.com/Yatsuiii/api--causality-engine"
 
 [features]
+default = ["schema"]
 specta = ["dep:specta"]
+# JSONSchema validation. Disabling drops the jsonschema + serde_yaml deps
+# (~1MB of Cargo.lock); `schema:` assertions then record a disabled-feature
+# failure at runtime rather than validating.
+schema = ["dep:jsonschema", "dep:serde_yaml"]
 
 [dependencies]
 specta = { version = "=2.0.0-rc.22", features = ["derive"], optional = true }
@@ -15,9 +20,11 @@ model = { path = "../model" }
 ace-http = { path = "../http" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = { version = "0.9", optional = true }
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 chrono = "0.4"
 base64 = "0.22"
 tokio = { version = "1", features = ["time"] }
 tracing = "0.1"
+jsonschema = { version = "0.17", default-features = false, optional = true }

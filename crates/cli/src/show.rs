@@ -3,11 +3,24 @@ use crate::report;
 use colored::Colorize;
 use executor::{ExecutionLog, RunError};
 
-pub fn cmd_replay(path: &str) -> Result<(), CliError> {
+/// Render a previously-recorded execution log to the terminal.
+///
+/// Despite the historical `replay` name, this never touches the network —
+/// it only re-prints what the log already says. `deprecated_alias` is set
+/// when invoked via `ace replay`, in which case we warn.
+pub fn cmd_show(path: &str, deprecated_alias: bool) -> Result<(), CliError> {
+    if deprecated_alias {
+        eprintln!(
+            "{} `ace replay` is deprecated — it does not re-execute, it only prints the log. Use `ace show {}` instead.",
+            "warning:".yellow().bold(),
+            path
+        );
+    }
+
     let logs = load_execution_log(path)?;
 
     println!(
-        "\n{} Replaying {} execution(s)...\n",
+        "\n{} Showing {} recorded execution(s)...\n",
         "▶".cyan().bold(),
         logs.len()
     );

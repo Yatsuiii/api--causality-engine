@@ -19,6 +19,7 @@ pub struct RunArgs {
     pub concurrency: Option<usize>,
     pub strict_extract: bool,
     pub seed: Option<u64>,
+    pub redact: bool,
 }
 
 pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
@@ -116,6 +117,10 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
         concurrency: Some(concurrency),
         strict_extract: args.strict_extract,
         seed: args.seed,
+        redact: args.redact,
+        scenario_dir: std::path::Path::new(&args.scenario)
+            .parent()
+            .map(|p| p.to_path_buf()),
     };
 
     let results = executor::run(&scenario, &config).await;

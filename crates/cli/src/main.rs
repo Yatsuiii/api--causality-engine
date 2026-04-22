@@ -3,14 +3,28 @@ mod error;
 mod import;
 mod init;
 mod mock;
-mod replay;
 mod report;
 mod run;
+mod show;
 mod validate;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use run::RunArgs;
 use std::process;
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum RedactMode {
+    /// Mask values under sensitive keys before writing to execution_log.json (default).
+    On,
+    /// Disable redaction. Raw URLs, bodies, and assertion values land in the log.
+    Off,
+}
+
+impl RedactMode {
+    pub fn enabled(self) -> bool {
+        matches!(self, RedactMode::On)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -21,10 +35,10 @@ use std::process;
     name = "ace",
     about = "API Causality Engine — stateful API workflow testing",
     version,
-    long_about = "A production-grade engine for defining, executing, and validating \
-                   stateful API workflows using YAML scenarios. Supports headers, \
-                   request bodies, assertions, auth, concurrency, retry logic, \
-                   variable substitution, and deterministic replay."
+    long_about = "A CLI for defining, executing, and validating stateful API \
+                   workflows from YAML scenarios. Supports headers, request bodies, \
+                   assertions, auth, concurrency, retry logic, variable substitution, \
+                   and deterministic weighted routing via --seed."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -81,9 +95,22 @@ enum Commands {
         /// Base RNG seed for weighted edge routing (deterministic replay)
         #[arg(long)]
         seed: Option<u64>,
+
+        /// Redact sensitive values (tokens, passwords, api keys) in the
+        /// execution log and stdout. Default: on.
+        #[arg(long, value_enum, default_value_t = RedactMode::On)]
+        redact: RedactMode,
     },
 
-    /// Replay a previous execution from a JSON log
+    /// Print a previous execution log to the terminal (no re-execution)
+    Show {
+        /// Path to the execution log JSON file
+        log_file: String,
+    },
+
+    /// Deprecated alias for `show`. The command does NOT re-execute — it only
+    /// re-renders the logged run. Use `ace show <log>` instead.
+    #[command(hide = true)]
     Replay {
         /// Path to the execution log JSON file
         log_file: String,
@@ -183,6 +210,7 @@ async fn main() {
             concurrency,
             strict_extract,
             seed,
+            redact,
         } => {
             run::cmd_run(RunArgs {
                 scenario,
@@ -197,10 +225,12 @@ async fn main() {
                 concurrency,
                 strict_extract,
                 seed,
+                redact: redact.enabled(),
             })
             .await
         }
-        Commands::Replay { log_file } => replay::cmd_replay(&log_file),
+        Commands::Show { log_file } => show::cmd_show(&log_file, false),
+        Commands::Replay { log_file } => show::cmd_show(&log_file, true),
         Commands::Validate { scenario, graph } => validate::cmd_validate(&scenario, graph),
         Commands::Report {
             log_file,

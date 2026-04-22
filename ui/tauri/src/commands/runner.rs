@@ -65,7 +65,10 @@ pub async fn run_scenario(
         }
     }
 
-    let config = executor::RunConfig::default();
+    let config = executor::RunConfig {
+        scenario_dir: path.parent().map(|p| p.to_path_buf()),
+        ..executor::RunConfig::default()
+    };
     let started = Utc::now();
 
     let results = executor::run(&scenario, &config).await;

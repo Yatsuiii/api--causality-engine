@@ -107,6 +107,58 @@ pub struct Scenario {
     pub max_iterations: Option<u64>,
     #[serde(default)]
     pub terminal_states: Option<Vec<String>>,
+    /// Execution-log redaction and sizing policy. `None` means built-in defaults
+    /// apply (mask secrets, include bodies, 64KB cap). Override per scenario
+    /// when the built-in key list mislabels a field.
+    #[serde(default)]
+    pub log: Option<LogConfig>,
+}
+
+/// Per-scenario overrides for what lands in `execution_log.json`.
+///
+/// The built-in redactor already masks values under a list of sensitive keys
+/// (`token`, `password`, `api_key`, ...). Use `mask` to extend that list for
+/// domain-specific secrets and `unmask` to allowlist a field whose name
+/// accidentally collides with a sensitive substring (e.g. `session_id` when
+/// you genuinely want it in logs).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogConfig {
+    /// Extra key substrings to redact (case-insensitive, same matching rules
+    /// as the built-in list).
+    #[serde(default)]
+    pub mask: Vec<String>,
+    /// Exact key names to exempt from redaction even if they would otherwise
+    /// match the built-in or `mask` lists.
+    #[serde(default)]
+    pub unmask: Vec<String>,
+    /// When `false`, `request_body` and `response_body` are omitted from the
+    /// log entirely. Default `true`.
+    #[serde(default = "LogConfig::default_include_bodies")]
+    pub include_bodies: bool,
+    /// Truncate logged bodies larger than this (bytes). Default 65536.
+    #[serde(default = "LogConfig::default_max_body_bytes")]
+    pub max_body_bytes: usize,
+}
+
+impl LogConfig {
+    fn default_include_bodies() -> bool {
+        true
+    }
+    fn default_max_body_bytes() -> usize {
+        65_536
+    }
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            mask: Vec::new(),
+            unmask: Vec::new(),
+            include_bodies: Self::default_include_bodies(),
+            max_body_bytes: Self::default_max_body_bytes(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -290,27 +342,92 @@ impl std::fmt::Display for Method {
 pub struct RetryConfig {
     #[serde(default = "RetryConfig::default_attempts")]
     pub attempts: u32,
+    /// Initial delay between attempts (ms). For exponential backoff this is the
+    /// base; for fixed backoff it's the delay used between every attempt.
     #[serde(default = "RetryConfig::default_delay_ms")]
     pub delay_ms: u64,
+    /// `fixed` (default) holds `delay_ms` constant. `exponential` doubles the
+    /// delay each attempt (scaled by `multiplier`), capped at `max_delay_ms`.
+    #[serde(default)]
+    pub backoff: BackoffPolicy,
+    /// Growth factor for exponential backoff. Default 2.0. Ignored for fixed.
+    #[serde(default = "RetryConfig::default_multiplier")]
+    pub multiplier: f64,
+    /// Upper bound for any single retry delay (ms). Default 30_000.
+    #[serde(default = "RetryConfig::default_max_delay_ms")]
+    pub max_delay_ms: u64,
+    /// Jitter applied to each computed delay. `none` (default) is deterministic;
+    /// `full` randomizes uniformly in `[0, delay]`; `equal` splits as
+    /// `delay/2 + random(0, delay/2)`.
+    #[serde(default)]
+    pub jitter: JitterMode,
+    /// Status codes that trigger a retry. Empty (default) means use the built-in
+    /// set: `[408, 429, 500, 501, 502, 503, 504]`. Any HTTP status not in this
+    /// list is returned to the caller — including 401/404, which older ACE
+    /// versions retried. Transport errors (timeouts, connection refused) always
+    /// retry regardless of this list.
+    #[serde(default)]
+    pub retry_on: Vec<u16>,
 }
 
 impl RetryConfig {
     fn default_attempts() -> u32 {
         3
     }
-
     fn default_delay_ms() -> u64 {
         1000
+    }
+    fn default_multiplier() -> f64 {
+        2.0
+    }
+    fn default_max_delay_ms() -> u64 {
+        30_000
+    }
+
+    /// Built-in retry set applied when `retry_on` is empty. Matches the
+    /// AWS/Google/Polly industry default: timeout-adjacent + server errors.
+    pub const DEFAULT_RETRY_STATUSES: &'static [u16] = &[408, 429, 500, 501, 502, 503, 504];
+
+    /// Should the given HTTP status trigger a retry under this config?
+    pub fn should_retry_status(&self, status: u16) -> bool {
+        let list: &[u16] = if self.retry_on.is_empty() {
+            Self::DEFAULT_RETRY_STATUSES
+        } else {
+            &self.retry_on
+        };
+        list.contains(&status)
     }
 }
 
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            attempts: 3,
-            delay_ms: 1000,
+            attempts: Self::default_attempts(),
+            delay_ms: Self::default_delay_ms(),
+            backoff: BackoffPolicy::default(),
+            multiplier: Self::default_multiplier(),
+            max_delay_ms: Self::default_max_delay_ms(),
+            jitter: JitterMode::default(),
+            retry_on: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BackoffPolicy {
+    #[default]
+    Fixed,
+    Exponential,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum JitterMode {
+    #[default]
+    None,
+    Full,
+    Equal,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -417,6 +534,19 @@ pub struct Assertion {
     pub header: Option<HashMap<String, ValueCheck>>,
     #[serde(default)]
     pub response_time_ms: Option<ValueCheck>,
+    /// JSONSchema validation for the response body. Accepts either an inline
+    /// schema object or a string path (resolved relative to the scenario file).
+    #[serde(default)]
+    pub schema: Option<SchemaRef>,
+}
+
+/// Reference to a JSONSchema: inline object or file path.
+/// A bare string is treated as a path; an object is treated as the schema itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SchemaRef {
+    File(String),
+    Inline(serde_json::Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -660,5 +790,42 @@ terminal_states:
         assert_eq!(detailed.path(), "$.token");
         assert!(detailed.is_required(false)); // self-declared
         assert!(detailed.is_required(true));
+    }
+
+    #[test]
+    fn parse_schema_assertion_inline_and_file() {
+        let yaml = r#"
+name: schema-shapes
+initial_state: fetch
+steps:
+  - name: fetch
+    state: fetch
+    method: GET
+    url: https://example.com
+    assert:
+      - schema: ./schemas/user.json
+      - schema:
+          type: object
+          required: [id]
+          properties:
+            id: { type: integer }
+edges:
+  - from: fetch
+    to: done
+    default: true
+terminal_states:
+  - done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let asserts = scenario.steps[0].assertions.as_ref().unwrap();
+        assert_eq!(asserts.len(), 2);
+        match asserts[0].schema.as_ref().unwrap() {
+            SchemaRef::File(p) => assert_eq!(p, "./schemas/user.json"),
+            other => panic!("expected file ref, got {:?}", other),
+        }
+        match asserts[1].schema.as_ref().unwrap() {
+            SchemaRef::Inline(v) => assert!(v.get("properties").is_some()),
+            other => panic!("expected inline schema, got {:?}", other),
+        }
     }
 }

@@ -1,7 +1,8 @@
 use ace_core::{
-    assertions::{self, AssertionResult},
+    assertions::{self, AssertionResult, SchemaCache},
     graph::Graph,
     jsonpath,
+    redact::Redactor,
     variables::{self, Context, resolve_template, value_to_string},
 };
 use ace_http::{
@@ -10,8 +11,8 @@ use ace_http::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use model::{
-    AssertionMatch, Auth, Edge, FailurePolicy, FanOut, Hook, Scenario, StatusMatch, Step,
-    TransitionCondition,
+    AssertionMatch, Auth, BackoffPolicy, Edge, FailurePolicy, FanOut, Hook, JitterMode,
+    RetryConfig, Scenario, StatusMatch, Step, TransitionCondition,
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::collections::HashMap;
@@ -162,7 +163,7 @@ pub struct StepLog {
     pub response_body: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RunConfig {
     pub cli_variables: HashMap<String, String>,
     pub verbose: bool,
@@ -177,6 +178,32 @@ pub struct RunConfig {
     /// Base RNG seed for weighted edge routing. When unset, a random seed is
     /// generated per run and echoed via `ExecutionLog.seed` for replay.
     pub seed: Option<u64>,
+    /// Global redaction switch. `true` masks sensitive values (tokens,
+    /// passwords, api keys) in log URLs, bodies, and assertion results before
+    /// they reach `execution_log.json`. `false` disables all masking — the
+    /// `--redact=off` escape hatch for debugging. Per-scenario `log:` policy
+    /// (body inclusion, size cap, extra mask/unmask) still applies either way.
+    pub redact: bool,
+    /// Directory that relative `schema:` file paths in assertions resolve
+    /// against — typically the scenario file's parent. Unset means resolve
+    /// against the CWD.
+    pub scenario_dir: Option<std::path::PathBuf>,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            cli_variables: HashMap::new(),
+            verbose: false,
+            insecure: false,
+            proxy: None,
+            concurrency: None,
+            strict_extract: false,
+            seed: None,
+            redact: true,
+            scenario_dir: None,
+        }
+    }
 }
 
 async fn fetch_oauth2_token(
@@ -442,6 +469,7 @@ struct StepResult {
     url_sent: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_step(
     step: &Step,
     client: &Client,
@@ -449,6 +477,7 @@ async fn execute_step(
     scenario_auth: Option<&Auth>,
     _config: &RunConfig,
     task_id: usize,
+    schema_cache: &SchemaCache,
 ) -> Result<StepResult, RunError> {
     if let Some(hooks) = &step.pre_request
         && let Some(skip_reason) = execute_hooks(hooks, context, task_id, &step.name, "pre").await
@@ -513,29 +542,41 @@ async fn execute_step(
         multipart,
     };
 
-    let max_attempts = step.retry.as_ref().map_or(1, |r| r.attempts);
-    let delay_ms = step.retry.as_ref().map_or(0, |r| r.delay_ms);
+    let retry_cfg = step.retry.as_ref();
+    let max_attempts = retry_cfg.map_or(1, |r| r.attempts.max(1));
     let mut last_err: Option<String> = None;
     let method_str = step.method.as_str();
 
     for attempt in 1..=max_attempts {
         if attempt > 1 {
-            info!(
-                task_id,
-                step = step.name.as_str(),
-                attempt,
-                max_attempts,
-                "Retrying"
-            );
-            sleep(Duration::from_millis(delay_ms)).await;
+            if let Some(rc) = retry_cfg {
+                let delay_ms = compute_retry_delay(rc, attempt);
+                info!(
+                    task_id,
+                    step = step.name.as_str(),
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                    "Retrying"
+                );
+                sleep(Duration::from_millis(delay_ms)).await;
+            }
         }
 
         match send_request(client, method_str, &url, &opts).await {
             Ok(response) => {
-                let success = response.status >= 200 && response.status < 400;
-                if success || attempt == max_attempts {
+                let should_retry_status = retry_cfg
+                    .map(|rc| rc.should_retry_status(response.status))
+                    .unwrap_or(false);
+
+                if !should_retry_status || attempt == max_attempts {
                     let assertion_results = if let Some(asserts) = &step.assertions {
-                        assertions::evaluate(asserts, &response)
+                        assertions::evaluate_with_cache(
+                            asserts,
+                            &response,
+                            _config.scenario_dir.as_deref(),
+                            schema_cache,
+                        )
                     } else {
                         Vec::new()
                     };
@@ -571,7 +612,7 @@ async fn execute_step(
                     step = step.name.as_str(),
                     status = response.status,
                     attempt,
-                    "Non-success status, will retry"
+                    "Retryable status, will retry"
                 );
                 last_err = Some(format!("status {}", response.status));
             }
@@ -592,6 +633,40 @@ async fn execute_step(
         step: step.name.clone(),
         message: last_err.unwrap_or_else(|| "unknown error".into()),
     })
+}
+
+/// Delay (ms) to sleep before the given retry attempt (attempt >= 2).
+/// Public for unit-testing.
+pub fn compute_retry_delay(rc: &RetryConfig, attempt: u32) -> u64 {
+    let base = match rc.backoff {
+        BackoffPolicy::Fixed => rc.delay_ms,
+        BackoffPolicy::Exponential => {
+            // attempt 2 is the first sleep (exp = 0). attempt 3 is exp = 1, etc.
+            let exp = attempt.saturating_sub(2) as i32;
+            let raw = (rc.delay_ms as f64) * rc.multiplier.powi(exp);
+            if raw.is_finite() && raw >= 0.0 {
+                raw.min(u64::MAX as f64) as u64
+            } else {
+                rc.max_delay_ms
+            }
+        }
+    };
+    let capped = base.min(rc.max_delay_ms);
+    apply_jitter(capped, rc.jitter)
+}
+
+fn apply_jitter(delay: u64, mode: JitterMode) -> u64 {
+    if delay == 0 {
+        return 0;
+    }
+    match mode {
+        JitterMode::None => delay,
+        JitterMode::Full => rand::thread_rng().gen_range(0..=delay),
+        JitterMode::Equal => {
+            let half = delay / 2;
+            half + rand::thread_rng().gen_range(0..=(delay - half))
+        }
+    }
 }
 
 fn apply_auth(auth: &Auth, headers: &mut HashMap<String, String>, context: &Context) {
@@ -690,6 +765,30 @@ fn default_edge_target(edges: &[&Edge]) -> Option<String> {
         .or_else(|| edges.first().map(|edge| edge.to.clone()))
 }
 
+fn build_redactor(config: &RunConfig, scenario: &Scenario) -> Redactor {
+    let log_cfg = scenario.log.clone().unwrap_or_default();
+    Redactor::new(
+        config.redact,
+        log_cfg.include_bodies,
+        log_cfg.max_body_bytes,
+        log_cfg.mask,
+        log_cfg.unmask,
+    )
+}
+
+fn apply_redaction(step: &mut StepLog, redactor: &Redactor) {
+    step.url = redactor.redact_url(&step.url);
+    if let Some(b) = step.request_body.take() {
+        step.request_body = redactor.redact_body(&b);
+    }
+    if let Some(b) = step.response_body.take() {
+        step.response_body = redactor.redact_body(&b);
+    }
+    for a in step.assertions.iter_mut() {
+        redactor.scrub_assertion(a);
+    }
+}
+
 async fn run_once(
     scenario: &Scenario,
     task_id: usize,
@@ -701,6 +800,8 @@ async fn run_once(
         default_timeout_ms: scenario.default_timeout_ms,
     };
     let client = build_client(&client_config);
+    let redactor = build_redactor(config, scenario);
+    let schema_cache = SchemaCache::new();
 
     let mut context =
         variables::build_initial_context(scenario.variables.as_ref(), &config.cli_variables);
@@ -768,6 +869,7 @@ async fn run_once(
             scenario.auth.as_ref(),
             config,
             task_id,
+            &schema_cache,
         )
         .await
         {
@@ -804,7 +906,7 @@ async fn run_once(
 
                 if let Some(fan_out) = &matched_edge.parallel {
                     // Log the dispatch step itself before running branches.
-                    log.steps.push(StepLog {
+                    let mut dispatch_step = StepLog {
                         step_name: step.name.clone(),
                         state_before: state_before.clone(),
                         state_after: fan_out.join.clone(),
@@ -825,7 +927,9 @@ async fn run_once(
                         } else {
                             None
                         },
-                    });
+                    };
+                    apply_redaction(&mut dispatch_step, &redactor);
+                    log.steps.push(dispatch_step);
                     log.total_steps += 1;
                     if result.all_passed {
                         log.passed += 1;
@@ -850,6 +954,8 @@ async fn run_once(
                         task_seed,
                         max_iter,
                         &mut log,
+                        &redactor,
+                        &schema_cache,
                     )
                     .await
                     {
@@ -873,7 +979,7 @@ async fn run_once(
                     sleep(Duration::from_millis(delay)).await;
                 }
 
-                log.steps.push(StepLog {
+                let mut main_step = StepLog {
                     step_name: step.name.clone(),
                     state_before: state_before.clone(),
                     state_after: next_state.clone(),
@@ -894,7 +1000,9 @@ async fn run_once(
                     } else {
                         None
                     },
-                });
+                };
+                apply_redaction(&mut main_step, &redactor);
+                log.steps.push(main_step);
 
                 log.total_steps += 1;
                 if result.all_passed {
@@ -961,6 +1069,8 @@ async fn execute_fan_out(
     task_seed: u64,
     max_iter: u64,
     log: &mut ExecutionLog,
+    redactor: &Redactor,
+    schema_cache: &SchemaCache,
 ) -> Result<(), RunError> {
     let policy = fan_out.on_failure.unwrap_or_default();
 
@@ -993,6 +1103,8 @@ async fn execute_fan_out(
             fan_out.join.clone(),
             branch_rng,
             max_iter,
+            redactor,
+            schema_cache,
         ));
     }
 
@@ -1055,6 +1167,8 @@ async fn run_branch(
     stop_state: String,
     mut rng: StdRng,
     max_iter: u64,
+    redactor: &Redactor,
+    schema_cache: &SchemaCache,
 ) -> (Context, Vec<StepLog>, BranchStats, Result<(), RunError>) {
     let mut steps_out: Vec<StepLog> = Vec::new();
     let mut stats = BranchStats::default();
@@ -1100,6 +1214,7 @@ async fn run_branch(
             scenario.auth.as_ref(),
             config,
             task_id,
+            schema_cache,
         )
         .await
         {
@@ -1153,7 +1268,7 @@ async fn run_branch(
                     sleep(Duration::from_millis(delay)).await;
                 }
 
-                steps_out.push(StepLog {
+                let mut branch_step = StepLog {
                     step_name: step.name.clone(),
                     state_before: state_before.clone(),
                     state_after: next_state.clone(),
@@ -1174,7 +1289,9 @@ async fn run_branch(
                     } else {
                         None
                     },
-                });
+                };
+                apply_redaction(&mut branch_step, redactor);
+                steps_out.push(branch_step);
 
                 stats.total_steps += 1;
                 if result.all_passed {
@@ -1235,7 +1352,96 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use model::{Edge, ValueCheck};
+    use model::{BackoffPolicy, Edge, JitterMode, RetryConfig, ValueCheck};
+
+    fn retry_cfg(backoff: BackoffPolicy, jitter: JitterMode) -> RetryConfig {
+        RetryConfig {
+            attempts: 5,
+            delay_ms: 100,
+            backoff,
+            multiplier: 2.0,
+            max_delay_ms: 30_000,
+            jitter,
+            retry_on: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn retry_delay_fixed_stays_flat() {
+        let rc = retry_cfg(BackoffPolicy::Fixed, JitterMode::None);
+        assert_eq!(compute_retry_delay(&rc, 2), 100);
+        assert_eq!(compute_retry_delay(&rc, 3), 100);
+        assert_eq!(compute_retry_delay(&rc, 5), 100);
+    }
+
+    #[test]
+    fn retry_delay_exponential_doubles() {
+        let rc = retry_cfg(BackoffPolicy::Exponential, JitterMode::None);
+        assert_eq!(compute_retry_delay(&rc, 2), 100);
+        assert_eq!(compute_retry_delay(&rc, 3), 200);
+        assert_eq!(compute_retry_delay(&rc, 4), 400);
+        assert_eq!(compute_retry_delay(&rc, 5), 800);
+    }
+
+    #[test]
+    fn retry_delay_exponential_capped_by_max() {
+        let mut rc = retry_cfg(BackoffPolicy::Exponential, JitterMode::None);
+        rc.delay_ms = 1000;
+        rc.max_delay_ms = 3000;
+        assert_eq!(compute_retry_delay(&rc, 2), 1000);
+        assert_eq!(compute_retry_delay(&rc, 3), 2000);
+        assert_eq!(compute_retry_delay(&rc, 4), 3000); // 4000 -> capped
+        assert_eq!(compute_retry_delay(&rc, 10), 3000); // huge exp -> capped
+    }
+
+    #[test]
+    fn retry_delay_jitter_full_stays_in_range() {
+        let rc = retry_cfg(BackoffPolicy::Fixed, JitterMode::Full);
+        for _ in 0..20 {
+            let d = compute_retry_delay(&rc, 2);
+            assert!(d <= 100, "full jitter should be <= delay, got {}", d);
+        }
+    }
+
+    #[test]
+    fn retry_delay_jitter_equal_stays_in_half_range() {
+        let rc = retry_cfg(BackoffPolicy::Fixed, JitterMode::Equal);
+        for _ in 0..20 {
+            let d = compute_retry_delay(&rc, 2);
+            assert!(
+                (50..=100).contains(&d),
+                "equal jitter should be delay/2..=delay, got {}",
+                d
+            );
+        }
+    }
+
+    #[test]
+    fn retry_predicate_default_set() {
+        let rc = RetryConfig::default();
+        // Built-in: 408, 429, 500..=504
+        assert!(rc.should_retry_status(500));
+        assert!(rc.should_retry_status(502));
+        assert!(rc.should_retry_status(429));
+        assert!(rc.should_retry_status(408));
+        // Not in default: 4xx client errors except 408/429
+        assert!(!rc.should_retry_status(400));
+        assert!(!rc.should_retry_status(401));
+        assert!(!rc.should_retry_status(404));
+        // 2xx/3xx never retried
+        assert!(!rc.should_retry_status(200));
+        assert!(!rc.should_retry_status(301));
+    }
+
+    #[test]
+    fn retry_predicate_explicit_overrides_default() {
+        let mut rc = RetryConfig::default();
+        rc.retry_on = vec![404, 503];
+        assert!(rc.should_retry_status(404));
+        assert!(rc.should_retry_status(503));
+        assert!(!rc.should_retry_status(500)); // not in explicit list
+        assert!(!rc.should_retry_status(429)); // not in explicit list
+    }
 
     fn pick_to(edges: &[&Edge], resp: &HttpResponse) -> String {
         let mut counts = HashMap::new();
