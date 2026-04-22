@@ -324,8 +324,8 @@ fn compile_schema(
                 Some(dir) if !Path::new(path).is_absolute() => dir.join(path),
                 _ => Path::new(path).to_path_buf(),
             };
-            let contents = std::fs::read_to_string(&resolved)
-                .map_err(|e| format!("io error: {}", e))?;
+            let contents =
+                std::fs::read_to_string(&resolved).map_err(|e| format!("io error: {}", e))?;
             serde_json::from_str::<serde_json::Value>(&contents)
                 .or_else(|_| serde_yaml::from_str::<serde_json::Value>(&contents))
                 .map_err(|e| format!("parse error: {}", e))?

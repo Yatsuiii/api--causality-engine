@@ -53,7 +53,10 @@ impl Redactor {
             enabled,
             include_bodies,
             max_body_bytes,
-            extra_mask: extra_mask.into_iter().map(|s| s.to_ascii_lowercase()).collect(),
+            extra_mask: extra_mask
+                .into_iter()
+                .map(|s| s.to_ascii_lowercase())
+                .collect(),
             unmask: unmask.into_iter().map(|s| s.to_ascii_lowercase()).collect(),
         }
     }
@@ -136,7 +139,10 @@ impl Redactor {
             String::new()
         };
 
-        format!("{}{}{}{}", scheme, authority_scrubbed, path_only, rebuilt_query)
+        format!(
+            "{}{}{}{}",
+            scheme, authority_scrubbed, path_only, rebuilt_query
+        )
     }
 
     /// Redact a body string. Tries JSON first, falls back to form-encoded, else
@@ -210,11 +216,7 @@ impl Redactor {
         while cut > 0 && !s.is_char_boundary(cut) {
             cut -= 1;
         }
-        format!(
-            "{}... [truncated, {} total bytes]",
-            &s[..cut],
-            s.len()
-        )
+        format!("{}... [truncated, {} total bytes]", &s[..cut], s.len())
     }
 
     /// Mask an assertion display value when the assertion's path is sensitive.
@@ -307,7 +309,10 @@ mod tests {
     fn disabled_masks_nothing() {
         let r = Redactor::new(false, true, usize::MAX, vec![], vec![]);
         assert!(!r.is_sensitive_key("password"));
-        assert_eq!(r.redact_url("https://a:b@h/p?token=x"), "https://a:b@h/p?token=x");
+        assert_eq!(
+            r.redact_url("https://a:b@h/p?token=x"),
+            "https://a:b@h/p?token=x"
+        );
     }
 
     #[test]
