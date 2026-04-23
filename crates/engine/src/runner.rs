@@ -4,7 +4,7 @@ use crate::config::{RunConfig, RunError};
 use crate::edges::{default_edge_target, evaluate_edges};
 use crate::graph::Graph;
 use crate::http::execute_step;
-use crate::log::{ExecutionLog, StepLog};
+use crate::log::{ExecutionLog, StepFailure, StepLog};
 use crate::redact::Redactor;
 use crate::trace::EdgeOutcome;
 use crate::variables::{self, Context};
@@ -15,6 +15,48 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, info};
+
+struct StepLogBuilder<'a> {
+    result: &'a crate::http::StepResult,
+    step_name: String,
+    method: String,
+    state_before: String,
+    state_after: String,
+    matched_edge_tag: Option<String>,
+    branch_path: Option<Vec<String>>,
+    edge_evaluations: Vec<crate::trace::EdgeEvaluation>,
+    verbose: bool,
+    failure: Option<StepFailure>,
+}
+
+impl<'a> StepLogBuilder<'a> {
+    fn build(self) -> StepLog {
+        StepLog {
+            step_name: self.step_name,
+            state_before: self.state_before,
+            state_after: self.state_after,
+            method: self.method,
+            url: self.result.url_sent.clone(),
+            status: self.result.response.status,
+            duration_ms: self.result.response.duration_ms,
+            assertions: self.result.assertion_results.clone(),
+            matched_edge_tag: self.matched_edge_tag,
+            branch_path: self.branch_path,
+            request_body: if self.verbose {
+                self.result.body_sent.clone()
+            } else {
+                None
+            },
+            response_body: if self.verbose {
+                Some(self.result.response.body.clone())
+            } else {
+                None
+            },
+            edge_evaluations: self.edge_evaluations,
+            failure: self.failure,
+        }
+    }
+}
 
 fn build_redactor(config: &RunConfig, scenario: &Scenario) -> Redactor {
     let log_cfg = scenario.log.clone().unwrap_or_default();
@@ -158,29 +200,26 @@ async fn run_once(
                                 }
                                 _ => None,
                             });
-                        let mut synth = StepLog {
+                        let failure = match &capped_edge {
+                            Some((to, limit)) => StepFailure::MaxTakesExceeded {
+                                to: to.clone(),
+                                limit: *limit,
+                            },
+                            None => StepFailure::NoMatch,
+                        };
+                        let mut synth = StepLogBuilder {
+                            result: &result,
                             step_name: step.name.clone(),
+                            method: step.method.as_str().to_string(),
                             state_before: state_before.clone(),
                             state_after: state_before.clone(),
-                            method: step.method.as_str().to_string(),
-                            url: result.url_sent,
-                            status: result.response.status,
-                            duration_ms: result.response.duration_ms,
-                            assertions: result.assertion_results.clone(),
                             matched_edge_tag: None,
                             branch_path: None,
-                            request_body: if config.verbose {
-                                result.body_sent
-                            } else {
-                                None
-                            },
-                            response_body: if config.verbose {
-                                Some(result.response.body.clone())
-                            } else {
-                                None
-                            },
                             edge_evaluations: decision.evaluations,
-                        };
+                            verbose: config.verbose,
+                            failure: Some(failure),
+                        }
+                        .build();
                         apply_redaction(&mut synth, &redactor);
                         log.steps.push(synth);
                         log.total_steps += 1;
@@ -205,29 +244,19 @@ async fn run_once(
                 let evaluations = decision.evaluations;
 
                 if let Some(fan_out) = &matched_edge.parallel {
-                    let mut dispatch_step = StepLog {
+                    let mut dispatch_step = StepLogBuilder {
+                        result: &result,
                         step_name: step.name.clone(),
+                        method: step.method.as_str().to_string(),
                         state_before: state_before.clone(),
                         state_after: fan_out.join.clone(),
-                        method: step.method.as_str().to_string(),
-                        url: result.url_sent,
-                        status: result.response.status,
-                        duration_ms: result.response.duration_ms,
-                        assertions: result.assertion_results.clone(),
                         matched_edge_tag: matched_edge.tag.clone(),
                         branch_path: None,
-                        request_body: if config.verbose {
-                            result.body_sent
-                        } else {
-                            None
-                        },
-                        response_body: if config.verbose {
-                            Some(result.response.body.clone())
-                        } else {
-                            None
-                        },
                         edge_evaluations: evaluations,
-                    };
+                        verbose: config.verbose,
+                        failure: None,
+                    }
+                    .build();
                     apply_redaction(&mut dispatch_step, &redactor);
                     log.steps.push(dispatch_step);
                     log.total_steps += 1;
@@ -279,29 +308,19 @@ async fn run_once(
                     sleep(Duration::from_millis(delay)).await;
                 }
 
-                let mut main_step = StepLog {
+                let mut main_step = StepLogBuilder {
+                    result: &result,
                     step_name: step.name.clone(),
+                    method: step.method.as_str().to_string(),
                     state_before: state_before.clone(),
                     state_after: next_state.clone(),
-                    method: step.method.as_str().to_string(),
-                    url: result.url_sent,
-                    status: result.response.status,
-                    duration_ms: result.response.duration_ms,
-                    assertions: result.assertion_results.clone(),
                     matched_edge_tag: matched_edge.tag.clone(),
                     branch_path: None,
-                    request_body: if config.verbose {
-                        result.body_sent
-                    } else {
-                        None
-                    },
-                    response_body: if config.verbose {
-                        Some(result.response.body.clone())
-                    } else {
-                        None
-                    },
                     edge_evaluations: evaluations,
-                };
+                    verbose: config.verbose,
+                    failure: None,
+                }
+                .build();
                 apply_redaction(&mut main_step, &redactor);
                 log.steps.push(main_step);
 
@@ -550,29 +569,26 @@ async fn run_branch(
                                 }
                                 _ => None,
                             });
-                        let mut synth = StepLog {
+                        let failure = match &capped_edge {
+                            Some((to, limit)) => StepFailure::MaxTakesExceeded {
+                                to: to.clone(),
+                                limit: *limit,
+                            },
+                            None => StepFailure::NoMatch,
+                        };
+                        let mut synth = StepLogBuilder {
+                            result: &result,
                             step_name: step.name.clone(),
+                            method: step.method.as_str().to_string(),
                             state_before: state_before.clone(),
                             state_after: state_before.clone(),
-                            method: step.method.as_str().to_string(),
-                            url: result.url_sent,
-                            status: result.response.status,
-                            duration_ms: result.response.duration_ms,
-                            assertions: result.assertion_results.clone(),
                             matched_edge_tag: None,
                             branch_path: Some(branch_path.clone()),
-                            request_body: if config.verbose {
-                                result.body_sent
-                            } else {
-                                None
-                            },
-                            response_body: if config.verbose {
-                                Some(result.response.body.clone())
-                            } else {
-                                None
-                            },
                             edge_evaluations: decision.evaluations,
-                        };
+                            verbose: config.verbose,
+                            failure: Some(failure),
+                        }
+                        .build();
                         apply_redaction(&mut synth, redactor);
                         steps_out.push(synth);
                         stats.total_steps += 1;
@@ -617,29 +633,19 @@ async fn run_branch(
                     sleep(Duration::from_millis(delay)).await;
                 }
 
-                let mut branch_step = StepLog {
+                let mut branch_step = StepLogBuilder {
+                    result: &result,
                     step_name: step.name.clone(),
+                    method: step.method.as_str().to_string(),
                     state_before: state_before.clone(),
                     state_after: next_state.clone(),
-                    method: step.method.as_str().to_string(),
-                    url: result.url_sent,
-                    status: result.response.status,
-                    duration_ms: result.response.duration_ms,
-                    assertions: result.assertion_results.clone(),
                     matched_edge_tag: matched_edge.tag.clone(),
                     branch_path: Some(branch_path.clone()),
-                    request_body: if config.verbose {
-                        result.body_sent
-                    } else {
-                        None
-                    },
-                    response_body: if config.verbose {
-                        Some(result.response.body.clone())
-                    } else {
-                        None
-                    },
                     edge_evaluations: evaluations,
-                };
+                    verbose: config.verbose,
+                    failure: None,
+                }
+                .build();
                 apply_redaction(&mut branch_step, redactor);
                 steps_out.push(branch_step);
 

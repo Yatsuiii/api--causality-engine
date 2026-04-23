@@ -1,6 +1,20 @@
 use crate::assertions::AssertionResult;
 use crate::trace::EdgeEvaluation;
 
+/// Machine-readable step failure discriminant. Set on the `StepLog` that
+/// caused a run to end so `result_from_log` can reconstruct the error
+/// without heuristics. Absent on successful steps and on steps that failed
+/// only via assertion results.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StepFailure {
+    NoMatch,
+    MaxTakesExceeded { to: String, limit: u32 },
+    ExtractionMissing { key: String, path: String },
+    HttpError { message: String },
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ExecutionLog {
@@ -46,4 +60,11 @@ pub struct StepLog {
     /// on terminal/skipped steps. Old logs deserialize fine (serde default).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edge_evaluations: Vec<EdgeEvaluation>,
+    /// Explicit failure discriminant. Set when this step caused the run to
+    /// end with a non-assertion error (no-match, max_takes, extraction
+    /// missing, HTTP error). Absent on successful steps. Used by
+    /// `result_from_log` to reconstruct the error without structural
+    /// heuristics — avoids misclassifying self-loops as failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<StepFailure>,
 }

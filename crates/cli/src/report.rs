@@ -1,6 +1,8 @@
 use crate::error::{CliError, load_execution_log};
 use colored::Colorize;
-use engine::{EdgeEvaluation, EdgeOutcome, EdgeRejectReason, ExecutionLog, RunError, StepLog};
+use engine::{
+    EdgeEvaluation, EdgeOutcome, EdgeRejectReason, ExecutionLog, RunError, StepFailure, StepLog,
+};
 use std::io::Write;
 
 // ---------------------------------------------------------------------------
@@ -51,7 +53,7 @@ pub fn print_step_live(task_id: usize, step: &StepLog, verbose: bool) {
         && (verbose || step_failed || has_loser || step.edge_evaluations.len() > 1)
     {
         for eval in &step.edge_evaluations {
-            println!("    {}", render_edge_evaluation(eval));
+            println!("    {}", render_edge_evaluation(eval, step_failed));
         }
     }
 
@@ -65,7 +67,7 @@ pub fn print_step_live(task_id: usize, step: &StepLog, verbose: bool) {
     }
 }
 
-fn render_edge_evaluation(eval: &EdgeEvaluation) -> String {
+fn render_edge_evaluation(eval: &EdgeEvaluation, step_failed: bool) -> String {
     let tag_suffix = eval
         .tag
         .as_ref()
@@ -73,6 +75,9 @@ fn render_edge_evaluation(eval: &EdgeEvaluation) -> String {
         .unwrap_or_default();
     let target = format!("→ {}{}", eval.to, tag_suffix);
     match &eval.outcome {
+        // Green check only when the surrounding step passed; neutral arrow when
+        // the step failed so the ✓ doesn't visually contradict the ✗ header.
+        EdgeOutcome::Matched if step_failed => format!("{} {}", "·".dimmed(), target.dimmed()),
         EdgeOutcome::Matched => format!("{} {}", "✓".green().bold(), target.cyan()),
         EdgeOutcome::Rejected(reason) => format!(
             "{} {}  [{}]",
@@ -343,10 +348,11 @@ fn xml_escape(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Rebuild the `Result` side of a `(ExecutionLog, Result<…>)` pair from
-/// persisted data.  The raw `RunError` is not stored on disk — only the step
-/// logs and aggregate counters are.  We reconstruct a best-effort result:
-/// - `log.failed > 0` → `Err(AssertionFailed)` with the actual failures
-/// - otherwise          → `Ok(state_after)` of the last step
+/// persisted data. Reconstruction order:
+/// 1. `log.failed == 0` → `Ok(state_after of last step)`
+/// 2. Last step carries `failure` discriminant → reconstruct specific error
+/// 3. Any step has failed assertions → `AssertionFailed`
+/// 4. Fallback → `AssertionFailed` with empty failures (shouldn't happen)
 pub fn result_from_log(log: &ExecutionLog) -> Result<String, RunError> {
     let final_state = log
         .steps
@@ -358,30 +364,30 @@ pub fn result_from_log(log: &ExecutionLog) -> Result<String, RunError> {
         return Ok(final_state);
     }
 
-    // A synthetic no-match step has edge_evaluations but no Matched outcome
-    // and (often) no failed assertions. Reconstruct the real transition
-    // error so the summary line can explain the failure correctly instead
-    // of misreporting it as "0 assertion(s) failed".
-    let no_match_step = log.steps.iter().find(|s| {
-        !s.edge_evaluations.is_empty()
-            && s.edge_evaluations
-                .iter()
-                .all(|e| !matches!(e.outcome, EdgeOutcome::Matched))
-    });
-    if let Some(step) = no_match_step {
-        let max_takes = step.edge_evaluations.iter().find_map(|e| match &e.outcome {
-            EdgeOutcome::MaxTakesExceeded { limit } => Some((e.to.clone(), *limit)),
-            _ => None,
-        });
-        return Err(match max_takes {
-            Some((to, limit)) => RunError::EdgeMaxTakesExceeded {
-                state: step.state_before.clone(),
-                to,
-                limit,
-            },
-            None => RunError::NoMatchingTransition {
+    // Check the last step for an explicit failure discriminant. This is set
+    // by the runner at every non-assertion termination site and is the
+    // authoritative signal — no heuristics, no self-loop confusion.
+    if let Some(step) = log.steps.last()
+        && let Some(ref f) = step.failure
+    {
+        return Err(match f {
+            StepFailure::NoMatch => RunError::NoMatchingTransition {
                 state: step.state_before.clone(),
                 status: step.status,
+            },
+            StepFailure::MaxTakesExceeded { to, limit } => RunError::EdgeMaxTakesExceeded {
+                state: step.state_before.clone(),
+                to: to.clone(),
+                limit: *limit,
+            },
+            StepFailure::ExtractionMissing { key, path } => RunError::ExtractionMissing {
+                step: step.step_name.clone(),
+                key: key.clone(),
+                path: path.clone(),
+            },
+            StepFailure::HttpError { message } => RunError::HttpError {
+                step: step.step_name.clone(),
+                message: message.clone(),
             },
         });
     }
@@ -474,6 +480,7 @@ mod tests {
                 request_body: None,
                 response_body: None,
                 edge_evaluations: Vec::new(),
+                failure: None,
             }],
             total_duration_ms: 50,
             total_steps: 1,
@@ -506,6 +513,7 @@ mod tests {
                 request_body: None,
                 response_body: None,
                 edge_evaluations: Vec::new(),
+                failure: None,
             }],
             total_duration_ms: 50,
             total_steps: 1,
@@ -544,6 +552,7 @@ mod tests {
                         actual: status,
                     }),
                 }],
+                failure: Some(StepFailure::NoMatch),
             }],
             total_duration_ms: 10,
             total_steps: 1,
@@ -587,6 +596,112 @@ mod tests {
                 assert_eq!(status, 500);
             }
             other => panic!("expected NoMatchingTransition, got {:?}", other),
+        }
+    }
+
+    /// Regression: a self-loop step (state_before == state_after, legitimate
+    /// polling pattern) with no `failure` field must NOT be misclassified as
+    /// a no-match failure. The old heuristic (`state_before == state_after` +
+    /// non-Matched evaluations) would have incorrectly returned
+    /// NoMatchingTransition. The new explicit-discriminant path only fires
+    /// when `failure` is Some.
+    #[test]
+    fn result_from_log_self_loop_is_not_misclassified() {
+        use engine::{EdgeEvaluation, EdgeOutcome};
+        let log = ExecutionLog {
+            steps: vec![StepLog {
+                step_name: "poll".into(),
+                state_before: "waiting".into(),
+                state_after: "waiting".into(), // self-loop
+                method: "GET".into(),
+                url: "http://example.com/status".into(),
+                status: 200,
+                duration_ms: 20,
+                assertions: Vec::new(),
+                matched_edge_tag: None,
+                branch_path: None,
+                request_body: None,
+                response_body: None,
+                edge_evaluations: vec![EdgeEvaluation {
+                    to: "waiting".into(),
+                    tag: None,
+                    outcome: EdgeOutcome::Matched,
+                }],
+                failure: None, // no failure — the loop matched successfully
+            }],
+            total_duration_ms: 20,
+            total_steps: 1,
+            passed: 1,
+            failed: 0,
+            iterations: 1,
+            terminal_state: None,
+            seed: 0,
+        };
+        assert!(
+            result_from_log(&log).is_ok(),
+            "self-loop with failure:None must be Ok"
+        );
+    }
+
+    /// Regression: when multiple steps are in the log and only the last one
+    /// carries `failure`, we must reconstruct from that last step — not from
+    /// an earlier step with a coincidental shape.
+    #[test]
+    fn result_from_log_uses_last_step_failure_not_earlier_steps() {
+        use engine::StepFailure;
+        // First step: looks like a self-loop with edge_evaluations but no failure
+        let step1 = StepLog {
+            step_name: "poll".into(),
+            state_before: "waiting".into(),
+            state_after: "waiting".into(),
+            method: "GET".into(),
+            url: "http://example.com".into(),
+            status: 200,
+            duration_ms: 10,
+            assertions: Vec::new(),
+            matched_edge_tag: None,
+            branch_path: None,
+            request_body: None,
+            response_body: None,
+            edge_evaluations: Vec::new(),
+            failure: None,
+        };
+        // Last step: explicit no-match
+        let step2 = StepLog {
+            step_name: "call".into(),
+            state_before: "active".into(),
+            state_after: "active".into(),
+            method: "GET".into(),
+            url: "http://example.com".into(),
+            status: 503,
+            duration_ms: 10,
+            assertions: Vec::new(),
+            matched_edge_tag: None,
+            branch_path: None,
+            request_body: None,
+            response_body: None,
+            edge_evaluations: Vec::new(),
+            failure: Some(StepFailure::NoMatch),
+        };
+        let log = ExecutionLog {
+            steps: vec![step1, step2],
+            total_duration_ms: 20,
+            total_steps: 2,
+            passed: 1,
+            failed: 1,
+            iterations: 2,
+            terminal_state: None,
+            seed: 0,
+        };
+        match result_from_log(&log) {
+            Err(RunError::NoMatchingTransition { state, status }) => {
+                assert_eq!(state, "active");
+                assert_eq!(status, 503);
+            }
+            other => panic!(
+                "expected NoMatchingTransition from last step, got {:?}",
+                other
+            ),
         }
     }
 
