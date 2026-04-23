@@ -35,7 +35,7 @@ pub enum EdgeOutcome {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "reason", rename_all = "snake_case")]
 pub enum EdgeRejectReason {
     StatusMismatch {
         expected: String,
@@ -95,5 +95,35 @@ fn render_json(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::String(s) => format!("'{}'", s),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `EdgeOutcome` and `EdgeRejectReason` both used `tag = "kind"`,
+    /// producing duplicate-`kind` JSON on `Rejected(...)` that `ace show`
+    /// refused to parse. Keep tags distinct (`kind` / `reason`) so rejected
+    /// outcomes round-trip through the log.
+    #[test]
+    fn rejected_outcome_round_trips_through_json() {
+        let eval = EdgeEvaluation {
+            to: "done".into(),
+            tag: None,
+            outcome: EdgeOutcome::Rejected(EdgeRejectReason::StatusMismatch {
+                expected: "200".into(),
+                actual: 500,
+            }),
+        };
+        let json = serde_json::to_string(&eval).expect("serialize");
+        let back: EdgeEvaluation = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.to, "done");
+        match back.outcome {
+            EdgeOutcome::Rejected(EdgeRejectReason::StatusMismatch { actual, .. }) => {
+                assert_eq!(actual, 500);
+            }
+            other => panic!("expected Rejected(StatusMismatch), got {:?}", other),
+        }
     }
 }

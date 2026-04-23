@@ -354,22 +354,50 @@ pub fn result_from_log(log: &ExecutionLog) -> Result<String, RunError> {
         .map(|s| s.state_after.clone())
         .unwrap_or_else(|| "unknown".into());
 
-    if log.failed > 0 {
-        let failures: Vec<_> = log
-            .steps
-            .iter()
-            .flat_map(|s| s.assertions.iter().filter(|a| !a.passed).cloned())
-            .collect();
-        let step = log
-            .steps
-            .iter()
-            .find(|s| s.assertions.iter().any(|a| !a.passed))
-            .map(|s| s.step_name.clone())
-            .unwrap_or_else(|| "unknown".into());
-        Err(RunError::AssertionFailed { step, failures })
-    } else {
-        Ok(final_state)
+    if log.failed == 0 {
+        return Ok(final_state);
     }
+
+    // A synthetic no-match step has edge_evaluations but no Matched outcome
+    // and (often) no failed assertions. Reconstruct the real transition
+    // error so the summary line can explain the failure correctly instead
+    // of misreporting it as "0 assertion(s) failed".
+    let no_match_step = log.steps.iter().find(|s| {
+        !s.edge_evaluations.is_empty()
+            && s.edge_evaluations
+                .iter()
+                .all(|e| !matches!(e.outcome, EdgeOutcome::Matched))
+    });
+    if let Some(step) = no_match_step {
+        let max_takes = step.edge_evaluations.iter().find_map(|e| match &e.outcome {
+            EdgeOutcome::MaxTakesExceeded { limit } => Some((e.to.clone(), *limit)),
+            _ => None,
+        });
+        return Err(match max_takes {
+            Some((to, limit)) => RunError::EdgeMaxTakesExceeded {
+                state: step.state_before.clone(),
+                to,
+                limit,
+            },
+            None => RunError::NoMatchingTransition {
+                state: step.state_before.clone(),
+                status: step.status,
+            },
+        });
+    }
+
+    let failures: Vec<_> = log
+        .steps
+        .iter()
+        .flat_map(|s| s.assertions.iter().filter(|a| !a.passed).cloned())
+        .collect();
+    let step = log
+        .steps
+        .iter()
+        .find(|s| s.assertions.iter().any(|a| !a.passed))
+        .map(|s| s.step_name.clone())
+        .unwrap_or_else(|| "unknown".into());
+    Err(RunError::AssertionFailed { step, failures })
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +517,44 @@ mod tests {
         }
     }
 
+    /// Synthetic step shape produced by the runner on `NoMatchingTransition`:
+    /// no failing assertions, `state_before == state_after`, and every edge
+    /// evaluation is a non-Matched outcome.
+    fn no_match_log(status: u16) -> ExecutionLog {
+        use engine::{EdgeEvaluation, EdgeOutcome, EdgeRejectReason};
+        ExecutionLog {
+            steps: vec![StepLog {
+                step_name: "call".into(),
+                state_before: "start".into(),
+                state_after: "start".into(),
+                method: "GET".into(),
+                url: "http://example.com".into(),
+                status,
+                duration_ms: 10,
+                assertions: Vec::new(),
+                matched_edge_tag: None,
+                branch_path: None,
+                request_body: None,
+                response_body: None,
+                edge_evaluations: vec![EdgeEvaluation {
+                    to: "done".into(),
+                    tag: None,
+                    outcome: EdgeOutcome::Rejected(EdgeRejectReason::StatusMismatch {
+                        expected: "200".into(),
+                        actual: status,
+                    }),
+                }],
+            }],
+            total_duration_ms: 10,
+            total_steps: 1,
+            passed: 0,
+            failed: 1,
+            iterations: 1,
+            terminal_state: None,
+            seed: 0,
+        }
+    }
+
     // Bug regression: replay/report of a failed run must not return Ok.
     #[test]
     fn result_from_log_failed_is_err() {
@@ -506,6 +572,22 @@ mod tests {
         let log = passed_log("done");
         let result = result_from_log(&log);
         assert_eq!(result.unwrap(), "done");
+    }
+
+    // Bug regression: a no-match step (synthetic StepLog with
+    // edge_evaluations but no Matched outcome) must reconstruct as
+    // NoMatchingTransition so `ace show` summary reads correctly, rather
+    // than falling through to AssertionFailed with "0 assertion(s) failed".
+    #[test]
+    fn result_from_log_reconstructs_no_match_from_evaluations() {
+        let log = no_match_log(500);
+        match result_from_log(&log) {
+            Err(RunError::NoMatchingTransition { state, status }) => {
+                assert_eq!(state, "start");
+                assert_eq!(status, 500);
+            }
+            other => panic!("expected NoMatchingTransition, got {:?}", other),
+        }
     }
 
     #[test]
