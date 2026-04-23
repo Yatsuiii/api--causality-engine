@@ -39,17 +39,13 @@ pub fn print_step_live(task_id: usize, step: &StepLog, verbose: bool) {
         }
     }
 
-    // Causality trace: show per-edge evaluation when there's something to
-    // explain (multiple edges considered, a loser, or the step failed). Skip
-    // the single-Matched-edge happy path to keep output tight.
-    let step_failed = step.assertions.iter().any(|a| !a.passed) || step.status >= 400;
-    let has_loser = step
-        .edge_evaluations
-        .iter()
-        .any(|e| !matches!(e.outcome, EdgeOutcome::Matched));
-    if !step.edge_evaluations.is_empty()
-        && (verbose || step_failed || has_loser || step.edge_evaluations.len() > 1)
-    {
+    // Causality trace: always render when evaluations are present so
+    // `ace show` on a successful log still shows routing decisions.
+    // The step_failed flag only controls the Matched marker (✓ vs ·).
+    let step_failed = step.assertions.iter().any(|a| !a.passed)
+        || step.status >= 400
+        || step.failure.is_some();
+    if !step.edge_evaluations.is_empty() {
         for eval in &step.edge_evaluations {
             println!("    {}", render_edge_evaluation(eval, step_failed));
         }
@@ -63,6 +59,64 @@ pub fn print_step_live(task_id: usize, step: &StepLog, verbose: bool) {
             println!("    {} {}", "←".dimmed(), truncate(body, 200).dimmed());
         }
     }
+}
+
+/// Plain-text causality trace for JUnit `<system-out>` — no ANSI codes.
+fn render_trace_plain(step: &StepLog) -> String {
+    if step.edge_evaluations.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = step
+        .edge_evaluations
+        .iter()
+        .map(|eval| {
+            let tag = eval
+                .tag
+                .as_ref()
+                .map(|t| format!(" ({})", t))
+                .unwrap_or_default();
+            match &eval.outcome {
+                EdgeOutcome::Matched => format!("  [matched]  -> {}{}", eval.to, tag),
+                EdgeOutcome::RejectedStatusMismatch { expected, actual } => format!(
+                    "  [rejected] -> {}{}  status: expected {}, got {}",
+                    eval.to, tag, expected, actual
+                ),
+                EdgeOutcome::RejectedBodyCheckFailed { path, expected, actual } => {
+                    let act = if actual.is_empty() { "<missing>" } else { actual.as_str() };
+                    format!(
+                        "  [rejected] -> {}{}  body {}: {} (got {})",
+                        eval.to, tag, path, expected, act
+                    )
+                }
+                EdgeOutcome::RejectedAssertionGateFailed { failed_indices } => format!(
+                    "  [rejected] -> {}{}  gate: assertions {:?} failed",
+                    eval.to, tag, failed_indices
+                ),
+                EdgeOutcome::RejectedAssertionGateUnexpectedlyPassed => format!(
+                    "  [rejected] -> {}{}  gate: expected failing assertions but all passed",
+                    eval.to, tag
+                ),
+                EdgeOutcome::LostPriority { winner_priority } => format!(
+                    "  [skipped]  -> {}{}  lost priority, winner={}",
+                    eval.to, tag, winner_priority
+                ),
+                EdgeOutcome::LostWeightedRoll { weight, total } => format!(
+                    "  [skipped]  -> {}{}  lost weighted roll {}/{}",
+                    eval.to, tag, weight, total
+                ),
+                EdgeOutcome::LostTieBreak { winner_index } => format!(
+                    "  [skipped]  -> {}{}  unweighted tie, edge[{}] won",
+                    eval.to, tag, winner_index
+                ),
+                EdgeOutcome::MaxTakesExceeded { limit } => format!(
+                    "  [capped]   -> {}{}  max_takes {} reached",
+                    eval.to, tag, limit
+                ),
+                EdgeOutcome::Unknown => format!("  [unknown]  -> {}{}", eval.to, tag),
+            }
+        })
+        .collect();
+    format!("Edge evaluations:\n{}", lines.join("\n"))
 }
 
 fn render_edge_evaluation(eval: &EdgeEvaluation, step_failed: bool) -> String {
@@ -278,8 +332,9 @@ pub fn write_junit_report(
             total_time += time_s;
 
             let failed_assertions: Vec<_> = step.assertions.iter().filter(|a| !a.passed).collect();
+            let step_is_failure = !failed_assertions.is_empty() || step.failure.is_some();
 
-            if failed_assertions.is_empty() {
+            if !step_is_failure {
                 testcases.push(format!(
                     "    <testcase name=\"[User {}] {}\" classname=\"{}\" time=\"{:.3}\"/>",
                     i + 1,
@@ -289,23 +344,43 @@ pub fn write_junit_report(
                 ));
             } else {
                 total_failures += 1;
-                let msg: Vec<_> = failed_assertions
-                    .iter()
-                    .map(|a| {
-                        format!(
-                            "{}: expected {}, got {}",
-                            a.description, a.expected, a.actual
-                        )
-                    })
-                    .collect();
+
+                // Primary failure message: assertion failures or engine error.
+                let failure_msg = if !failed_assertions.is_empty() {
+                    failed_assertions
+                        .iter()
+                        .map(|a| {
+                            format!("{}: expected {}, got {}", a.description, a.expected, a.actual)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else if let Some(ref f) = step.failure {
+                    format!("{:?}", f)
+                } else {
+                    "step failed".into()
+                };
+
+                // Causality trace appended as <system-out> so CI dashboards
+                // can show why no edge fired without needing ace show.
+                let trace_lines = render_trace_plain(step);
+                let system_out = if trace_lines.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "\n      <system-out>{}</system-out>",
+                        xml_escape(&trace_lines)
+                    )
+                };
+
                 testcases.push(format!(
-                    "    <testcase name=\"[User {}] {}\" classname=\"{}\" time=\"{:.3}\">\n      <failure message=\"{}\">{}</failure>\n    </testcase>",
+                    "    <testcase name=\"[User {}] {}\" classname=\"{}\" time=\"{:.3}\">\n      <failure message=\"{}\">{}</failure>{}\n    </testcase>",
                     i + 1,
                     xml_escape(&step.step_name),
                     xml_escape(scenario_name),
                     time_s,
-                    xml_escape(&msg[0]),
-                    xml_escape(&msg.join("\n")),
+                    xml_escape(failure_msg.lines().next().unwrap_or("")),
+                    xml_escape(&failure_msg),
+                    system_out,
                 ));
             }
         }
@@ -799,5 +874,41 @@ mod tests {
             xml_escape("a&b<c>d\"e'f"),
             "a&amp;b&lt;c&gt;d&quot;e&apos;f"
         );
+    }
+
+    /// JUnit: a step whose `failure` field is set (no-match, max-takes) must
+    /// appear as a failure in the XML even when `assertions` is empty.
+    #[test]
+    fn junit_no_match_step_counts_as_failure() {
+        let log = no_match_log(500);
+        let results: Vec<(ExecutionLog, Result<String, RunError>)> =
+            vec![(log, Err(RunError::NoMatchingTransition { state: "start".into(), status: 500 }))];
+
+        let tmp = std::env::temp_dir().join("ace_junit_test.xml");
+        write_junit_report(&results, "test_scenario", tmp.to_str().unwrap())
+            .expect("write junit");
+        let xml = std::fs::read_to_string(&tmp).expect("read junit");
+        let _ = std::fs::remove_file(&tmp);
+
+        assert!(xml.contains("<failure"), "expected <failure> element");
+        assert!(xml.contains("failures=\"1\""), "expected failures=1");
+    }
+
+    /// JUnit: failing testcases must include a <system-out> with the causality
+    /// trace so CI dashboards can show why no edge fired.
+    #[test]
+    fn junit_failing_step_includes_system_out_trace() {
+        let log = no_match_log(500);
+        let results: Vec<(ExecutionLog, Result<String, RunError>)> =
+            vec![(log, Err(RunError::NoMatchingTransition { state: "start".into(), status: 500 }))];
+
+        let tmp = std::env::temp_dir().join("ace_junit_trace_test.xml");
+        write_junit_report(&results, "test_scenario", tmp.to_str().unwrap())
+            .expect("write junit");
+        let xml = std::fs::read_to_string(&tmp).expect("read junit");
+        let _ = std::fs::remove_file(&tmp);
+
+        assert!(xml.contains("<system-out>"), "expected <system-out> trace");
+        assert!(xml.contains("Edge evaluations:"), "expected trace header");
     }
 }

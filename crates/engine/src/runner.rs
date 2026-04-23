@@ -6,7 +6,7 @@ use crate::graph::Graph;
 use crate::http::execute_step;
 use crate::log::{ExecutionLog, StepFailure, StepLog};
 use crate::redact::Redactor;
-use crate::trace::EdgeOutcome;
+use crate::trace::{EdgeEvaluation, EdgeOutcome};
 use crate::variables::{self, Context};
 use ace_http::{Client, ClientConfig, build_client};
 use model::{FailurePolicy, FanOut, Scenario};
@@ -55,6 +55,37 @@ impl<'a> StepLogBuilder<'a> {
             edge_evaluations: self.edge_evaluations,
             failure: self.failure,
         }
+    }
+}
+
+/// Build a StepLog for a skipped step (no HTTP call was made). Records which
+/// edge was followed via default_edge_target so ace show can explain the hop.
+fn skipped_step_log(
+    step_name: String,
+    method: String,
+    state_before: String,
+    state_after: String,
+    branch_path: Option<Vec<String>>,
+) -> StepLog {
+    StepLog {
+        step_name,
+        state_before,
+        state_after: state_after.clone(),
+        method,
+        url: String::new(),
+        status: 0,
+        duration_ms: 0,
+        assertions: Vec::new(),
+        matched_edge_tag: None,
+        branch_path,
+        request_body: None,
+        response_body: None,
+        edge_evaluations: vec![EdgeEvaluation {
+            to: state_after,
+            tag: None,
+            outcome: EdgeOutcome::Matched,
+        }],
+        failure: None,
     }
 }
 
@@ -355,6 +386,16 @@ async fn run_once(
                     next = next_state.as_str(),
                     "Step skipped, following default edge"
                 );
+                let skip_log = skipped_step_log(
+                    step.name.clone(),
+                    step.method.as_str().to_string(),
+                    state_before.clone(),
+                    next_state.clone(),
+                    None,
+                );
+                log.steps.push(skip_log);
+                log.total_steps += 1;
+                log.passed += 1;
                 current_state = next_state;
             }
             Err(e) => {
@@ -674,6 +715,16 @@ async fn run_branch(
                         );
                     }
                 };
+                let skip_log = skipped_step_log(
+                    step.name.clone(),
+                    step.method.as_str().to_string(),
+                    state_before.clone(),
+                    next_state.clone(),
+                    Some(branch_path.clone()),
+                );
+                steps_out.push(skip_log);
+                stats.total_steps += 1;
+                stats.passed += 1;
                 current_state = next_state;
             }
             Err(e) => return (context, steps_out, stats, Err(e)),
