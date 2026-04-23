@@ -37,7 +37,12 @@ pub fn write_junit_report(
                 let failure_msg = if !failed_assertions.is_empty() {
                     failed_assertions
                         .iter()
-                        .map(|a| format!("{}: expected {}, got {}", a.description, a.expected, a.actual))
+                        .map(|a| {
+                            format!(
+                                "{}: expected {}, got {}",
+                                a.description, a.expected, a.actual
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join("\n")
                 } else if let Some(ref f) = step.failure {
@@ -50,7 +55,10 @@ pub fn write_junit_report(
                 let system_out = if trace_lines.is_empty() {
                     String::new()
                 } else {
-                    format!("\n      <system-out>{}</system-out>", xml_escape(&trace_lines))
+                    format!(
+                        "\n      <system-out>{}</system-out>",
+                        xml_escape(&trace_lines)
+                    )
                 };
 
                 testcases.push(format!(
@@ -160,7 +168,10 @@ mod tests {
         let log = no_match_log(500);
         let results: Vec<(ExecutionLog, Result<String, engine::RunError>)> = vec![(
             log,
-            Err(engine::RunError::NoMatchingTransition { state: "start".into(), status: 500 }),
+            Err(engine::RunError::NoMatchingTransition {
+                state: "start".into(),
+                status: 500,
+            }),
         )];
         let tmp = std::env::temp_dir().join("ace_junit_test.xml");
         write_junit_report(&results, "test_scenario", tmp.to_str().unwrap()).expect("write junit");
@@ -175,7 +186,10 @@ mod tests {
         let log = no_match_log(500);
         let results: Vec<(ExecutionLog, Result<String, engine::RunError>)> = vec![(
             log,
-            Err(engine::RunError::NoMatchingTransition { state: "start".into(), status: 500 }),
+            Err(engine::RunError::NoMatchingTransition {
+                state: "start".into(),
+                status: 500,
+            }),
         )];
         let tmp = std::env::temp_dir().join("ace_junit_trace_test.xml");
         write_junit_report(&results, "test_scenario", tmp.to_str().unwrap()).expect("write junit");

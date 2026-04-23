@@ -135,6 +135,9 @@ mod tests {
         };
         let json = serde_json::to_string(&eval).expect("serialize");
         let back: EdgeEvaluation = serde_json::from_str(&json).expect("round trip");
-        assert!(matches!(back.outcome, EdgeOutcome::LostTieBreak { winner_index: 0 }));
+        assert!(matches!(
+            back.outcome,
+            EdgeOutcome::LostTieBreak { winner_index: 0 }
+        ));
     }
 }

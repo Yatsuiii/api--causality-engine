@@ -10,9 +10,17 @@ use crate::trace::EdgeEvaluation;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StepFailure {
     NoMatch,
-    MaxTakesExceeded { to: String, limit: u32 },
-    ExtractionMissing { key: String, path: String },
-    HttpError { message: String },
+    MaxTakesExceeded {
+        to: String,
+        limit: u32,
+    },
+    ExtractionMissing {
+        key: String,
+        path: String,
+    },
+    HttpError {
+        message: String,
+    },
     /// Unknown variant from a newer ACE version — ignored by `result_from_log`.
     #[serde(other)]
     Unknown,

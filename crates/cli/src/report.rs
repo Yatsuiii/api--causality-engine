@@ -138,8 +138,8 @@ pub fn cmd_report(log_path: &str, format: &str, output: Option<String>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{EdgeEvaluation, EdgeOutcome, StepFailure, StepLog};
     use engine::assertions::AssertionResult;
+    use engine::{EdgeEvaluation, EdgeOutcome, StepFailure, StepLog};
 
     fn passed_log(state_after: &str) -> ExecutionLog {
         ExecutionLog {
@@ -303,7 +303,10 @@ mod tests {
             seed: 0,
             schema_version: 1,
         };
-        assert!(result_from_log(&log).is_ok(), "self-loop with failure:None must be Ok");
+        assert!(
+            result_from_log(&log).is_ok(),
+            "self-loop with failure:None must be Ok"
+        );
     }
 
     /// result_from_log uses the last step's failure, not any earlier step.
@@ -357,7 +360,10 @@ mod tests {
                 assert_eq!(state, "active");
                 assert_eq!(status, 503);
             }
-            other => panic!("expected NoMatchingTransition from last step, got {:?}", other),
+            other => panic!(
+                "expected NoMatchingTransition from last step, got {:?}",
+                other
+            ),
         }
     }
 

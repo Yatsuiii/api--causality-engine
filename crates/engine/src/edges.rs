@@ -140,7 +140,9 @@ fn choose_from(
             evaluations.push(EdgeEvaluation {
                 to: edges[i].to.clone(),
                 tag: edges[i].tag.clone(),
-                outcome: EdgeOutcome::LostTieBreak { winner_index: winner },
+                outcome: EdgeOutcome::LostTieBreak {
+                    winner_index: winner,
+                },
             });
         }
         return Some(winner);

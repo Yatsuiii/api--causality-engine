@@ -34,9 +34,8 @@ pub fn print_step_live(task_id: usize, step: &StepLog, verbose: bool) {
 
     // Always render evaluations when present so ace show on a successful log
     // still shows routing decisions. step_failed only controls ✓ vs · marker.
-    let step_failed = step.assertions.iter().any(|a| !a.passed)
-        || step.status >= 400
-        || step.failure.is_some();
+    let step_failed =
+        step.assertions.iter().any(|a| !a.passed) || step.status >= 400 || step.failure.is_some();
     if !step.edge_evaluations.is_empty() {
         for eval in &step.edge_evaluations {
             println!("    {}", render_edge_evaluation(eval, step_failed));
@@ -141,50 +140,73 @@ pub fn render_trace_plain(step: &StepLog) -> String {
     if step.edge_evaluations.is_empty() {
         return String::new();
     }
-    let lines: Vec<String> = step.edge_evaluations.iter().map(|eval| {
-        let tag = eval.tag.as_ref().map(|t| format!(" ({})", t)).unwrap_or_default();
-        match &eval.outcome {
-            EdgeOutcome::Matched => format!("  [matched]  -> {}{}", eval.to, tag),
-            EdgeOutcome::RejectedStatusMismatch { expected, actual } => format!(
-                "  [rejected] -> {}{}  status: expected {}, got {}",
-                eval.to, tag, expected, actual
-            ),
-            EdgeOutcome::RejectedBodyCheckFailed { path, expected, actual } => {
-                let act = if actual.is_empty() { "<missing>" } else { actual.as_str() };
-                format!("  [rejected] -> {}{}  body {}: {} (got {})", eval.to, tag, path, expected, act)
+    let lines: Vec<String> = step
+        .edge_evaluations
+        .iter()
+        .map(|eval| {
+            let tag = eval
+                .tag
+                .as_ref()
+                .map(|t| format!(" ({})", t))
+                .unwrap_or_default();
+            match &eval.outcome {
+                EdgeOutcome::Matched => format!("  [matched]  -> {}{}", eval.to, tag),
+                EdgeOutcome::RejectedStatusMismatch { expected, actual } => format!(
+                    "  [rejected] -> {}{}  status: expected {}, got {}",
+                    eval.to, tag, expected, actual
+                ),
+                EdgeOutcome::RejectedBodyCheckFailed {
+                    path,
+                    expected,
+                    actual,
+                } => {
+                    let act = if actual.is_empty() {
+                        "<missing>"
+                    } else {
+                        actual.as_str()
+                    };
+                    format!(
+                        "  [rejected] -> {}{}  body {}: {} (got {})",
+                        eval.to, tag, path, expected, act
+                    )
+                }
+                EdgeOutcome::RejectedAssertionGateFailed { failed_indices } => format!(
+                    "  [rejected] -> {}{}  gate: assertions {:?} failed",
+                    eval.to, tag, failed_indices
+                ),
+                EdgeOutcome::RejectedAssertionGateUnexpectedlyPassed => format!(
+                    "  [rejected] -> {}{}  gate: expected failing assertions but all passed",
+                    eval.to, tag
+                ),
+                EdgeOutcome::LostPriority { winner_priority } => format!(
+                    "  [skipped]  -> {}{}  lost priority, winner={}",
+                    eval.to, tag, winner_priority
+                ),
+                EdgeOutcome::LostWeightedRoll { weight, total } => format!(
+                    "  [skipped]  -> {}{}  lost weighted roll {}/{}",
+                    eval.to, tag, weight, total
+                ),
+                EdgeOutcome::LostTieBreak { winner_index } => format!(
+                    "  [skipped]  -> {}{}  unweighted tie, edge[{}] won",
+                    eval.to, tag, winner_index
+                ),
+                EdgeOutcome::MaxTakesExceeded { limit } => format!(
+                    "  [capped]   -> {}{}  max_takes {} reached",
+                    eval.to, tag, limit
+                ),
+                EdgeOutcome::Unknown => format!("  [unknown]  -> {}{}", eval.to, tag),
             }
-            EdgeOutcome::RejectedAssertionGateFailed { failed_indices } => format!(
-                "  [rejected] -> {}{}  gate: assertions {:?} failed",
-                eval.to, tag, failed_indices
-            ),
-            EdgeOutcome::RejectedAssertionGateUnexpectedlyPassed => format!(
-                "  [rejected] -> {}{}  gate: expected failing assertions but all passed",
-                eval.to, tag
-            ),
-            EdgeOutcome::LostPriority { winner_priority } => format!(
-                "  [skipped]  -> {}{}  lost priority, winner={}",
-                eval.to, tag, winner_priority
-            ),
-            EdgeOutcome::LostWeightedRoll { weight, total } => format!(
-                "  [skipped]  -> {}{}  lost weighted roll {}/{}",
-                eval.to, tag, weight, total
-            ),
-            EdgeOutcome::LostTieBreak { winner_index } => format!(
-                "  [skipped]  -> {}{}  unweighted tie, edge[{}] won",
-                eval.to, tag, winner_index
-            ),
-            EdgeOutcome::MaxTakesExceeded { limit } => format!(
-                "  [capped]   -> {}{}  max_takes {} reached",
-                eval.to, tag, limit
-            ),
-            EdgeOutcome::Unknown => format!("  [unknown]  -> {}{}", eval.to, tag),
-        }
-    }).collect();
+        })
+        .collect();
     format!("Edge evaluations:\n{}", lines.join("\n"))
 }
 
 fn render_edge_evaluation(eval: &EdgeEvaluation, step_failed: bool) -> String {
-    let tag_suffix = eval.tag.as_ref().map(|t| format!(" ({})", t)).unwrap_or_default();
+    let tag_suffix = eval
+        .tag
+        .as_ref()
+        .map(|t| format!(" ({})", t))
+        .unwrap_or_default();
     let target = format!("→ {}{}", eval.to, tag_suffix);
     match &eval.outcome {
         EdgeOutcome::Matched if step_failed => format!("{} {}", "·".dimmed(), target.dimmed()),
@@ -195,8 +217,16 @@ fn render_edge_evaluation(eval: &EdgeEvaluation, step_failed: bool) -> String {
             target.red(),
             format!("status: expected {}, got {}", expected, actual).yellow()
         ),
-        EdgeOutcome::RejectedBodyCheckFailed { path, expected, actual } => {
-            let actual_display = if actual.is_empty() { "<missing>" } else { actual.as_str() };
+        EdgeOutcome::RejectedBodyCheckFailed {
+            path,
+            expected,
+            actual,
+        } => {
+            let actual_display = if actual.is_empty() {
+                "<missing>"
+            } else {
+                actual.as_str()
+            };
             format!(
                 "{} {}  [{}]",
                 "✗".red().bold(),
@@ -232,7 +262,11 @@ fn render_edge_evaluation(eval: &EdgeEvaluation, step_failed: bool) -> String {
             "{} {}  [{}]",
             "⋯".dimmed(),
             target.dimmed(),
-            format!("unweighted tie, edge[{}] won — add weight: or reorder", winner_index).dimmed()
+            format!(
+                "unweighted tie, edge[{}] won — add weight: or reorder",
+                winner_index
+            )
+            .dimmed()
         ),
         EdgeOutcome::MaxTakesExceeded { limit } => format!(
             "{} {}  [{}]",
