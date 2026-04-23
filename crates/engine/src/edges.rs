@@ -1,6 +1,6 @@
 use crate::assertions::AssertionResult;
 use crate::jsonpath;
-use crate::trace::{self, EdgeEvaluation, EdgeOutcome, EdgeRejectReason};
+use crate::trace::{self, EdgeEvaluation, EdgeOutcome};
 use ace_http::HttpResponse;
 use model::{AssertionMatch, Edge, StatusMatch, TransitionCondition};
 use rand::{Rng, rngs::StdRng};
@@ -17,11 +17,15 @@ pub(crate) struct EdgeDecision {
     pub evaluations: Vec<EdgeEvaluation>,
 }
 
+/// Stable key for tracking per-edge take counts: `(from, to, tag)`.
+/// Avoids the pointer-identity hazard of `edge as *const Edge as usize`.
+pub(crate) type EdgeKey = (String, String, Option<String>);
+
 pub(crate) fn evaluate_edges(
     edges: &[&Edge],
     response: &HttpResponse,
     assertion_results: &[AssertionResult],
-    take_counts: &mut HashMap<usize, u32>,
+    take_counts: &mut HashMap<EdgeKey, u32>,
     rng: &mut StdRng,
 ) -> EdgeDecision {
     let mut evaluations: Vec<EdgeEvaluation> = Vec::new();
@@ -43,8 +47,8 @@ pub(crate) fn evaluate_edges(
         if let Some(cond) = edge.when.as_ref() {
             match matches_condition(cond, response, assertion_results) {
                 Ok(()) => cond_candidates.push(i),
-                Err(reason) => {
-                    evaluations.push(make_eval(i, EdgeOutcome::Rejected(reason)));
+                Err(outcome) => {
+                    evaluations.push(make_eval(i, outcome));
                 }
             }
         }
@@ -124,14 +128,21 @@ fn choose_from(
 
     let all_weighted = top.iter().all(|&i| edges[i].weight.is_some());
     if !all_weighted {
-        // First-in-list wins; peers are neither matched nor rejected — leave
-        // them off the trace to avoid misleading entries.
+        // Unweighted tie: first-in-list wins. Emit LostTieBreak for peers so
+        // the user knows why — add `weight:` or reorder to make it explicit.
         let winner = top[0];
         evaluations.push(EdgeEvaluation {
             to: edges[winner].to.clone(),
             tag: edges[winner].tag.clone(),
             outcome: EdgeOutcome::Matched,
         });
+        for &i in &top[1..] {
+            evaluations.push(EdgeEvaluation {
+                to: edges[i].to.clone(),
+                tag: edges[i].tag.clone(),
+                outcome: EdgeOutcome::LostTieBreak { winner_index: winner },
+            });
+        }
         return Some(winner);
     }
 
@@ -187,12 +198,12 @@ fn choose_from(
 fn apply_max_takes(
     chosen: usize,
     edges: &[&Edge],
-    take_counts: &mut HashMap<usize, u32>,
+    take_counts: &mut HashMap<EdgeKey, u32>,
     mut evaluations: Vec<EdgeEvaluation>,
 ) -> EdgeDecision {
     let edge = edges[chosen];
     if let Some(limit) = edge.max_takes {
-        let key = edge as *const Edge as usize;
+        let key = (edge.from.clone(), edge.to.clone(), edge.tag.clone());
         let count = take_counts.entry(key).or_insert(0);
         if *count >= limit {
             for ev in evaluations.iter_mut() {
@@ -221,7 +232,7 @@ fn matches_condition(
     condition: &TransitionCondition,
     response: &HttpResponse,
     assertion_results: &[AssertionResult],
-) -> Result<(), EdgeRejectReason> {
+) -> Result<(), EdgeOutcome> {
     if let Some(status_match) = &condition.status {
         let matches = match status_match {
             StatusMatch::Exact(code) => response.status == *code,
@@ -235,7 +246,7 @@ fn matches_condition(
                 StatusMatch::Exact(c) => c.to_string(),
                 StatusMatch::Complex(vc) => trace::describe_value_check(vc),
             };
-            return Err(EdgeRejectReason::StatusMismatch {
+            return Err(EdgeOutcome::RejectedStatusMismatch {
                 expected,
                 actual: response.status,
             });
@@ -254,7 +265,7 @@ fn matches_condition(
                 })
                 .unwrap_or_default();
             if !crate::assertions::eval_value_check(check, resolved.as_ref(), &actual_str) {
-                return Err(EdgeRejectReason::BodyCheckFailed {
+                return Err(EdgeOutcome::RejectedBodyCheckFailed {
                     path: path.clone(),
                     expected: trace::describe_value_check(check),
                     actual: actual_str,
@@ -274,12 +285,12 @@ fn matches_condition(
         match assertion_match {
             AssertionMatch::Passed => {
                 if !all_passed {
-                    return Err(EdgeRejectReason::AssertionGateFailed { failed_indices });
+                    return Err(EdgeOutcome::RejectedAssertionGateFailed { failed_indices });
                 }
             }
             AssertionMatch::Failed => {
                 if all_passed {
-                    return Err(EdgeRejectReason::AssertionGateUnexpectedlyPassed);
+                    return Err(EdgeOutcome::RejectedAssertionGateUnexpectedlyPassed);
                 }
             }
         }
@@ -562,10 +573,10 @@ mod tests {
         assert_eq!(decision.evaluations.len(), 2);
         for ev in &decision.evaluations {
             match &ev.outcome {
-                EdgeOutcome::Rejected(EdgeRejectReason::StatusMismatch { actual, .. }) => {
+                EdgeOutcome::RejectedStatusMismatch { actual, .. } => {
                     assert_eq!(*actual, 500);
                 }
-                other => panic!("expected Rejected(StatusMismatch), got {:?}", other),
+                other => panic!("expected RejectedStatusMismatch, got {:?}", other),
             }
         }
     }
@@ -705,11 +716,11 @@ mod tests {
         assert!(decision.chosen.is_none());
         assert_eq!(decision.evaluations.len(), 1);
         match &decision.evaluations[0].outcome {
-            EdgeOutcome::Rejected(EdgeRejectReason::BodyCheckFailed { path, actual, .. }) => {
+            EdgeOutcome::RejectedBodyCheckFailed { path, actual, .. } => {
                 assert_eq!(path, "status");
                 assert_eq!(actual, "error");
             }
-            other => panic!("expected BodyCheckFailed, got {:?}", other),
+            other => panic!("expected RejectedBodyCheckFailed, got {:?}", other),
         }
     }
 

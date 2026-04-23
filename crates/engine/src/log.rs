@@ -13,11 +13,30 @@ pub enum StepFailure {
     MaxTakesExceeded { to: String, limit: u32 },
     ExtractionMissing { key: String, path: String },
     HttpError { message: String },
+    /// Unknown variant from a newer ACE version — ignored by `result_from_log`.
+    #[serde(other)]
+    Unknown,
 }
 
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+fn default_schema_version() -> u32 {
+    1
+}
+
+fn is_default_schema_version(v: &u32) -> bool {
+    *v == 1
+}
+
+/// Schema version for the trace JSON format. Increment when making breaking
+/// changes to `ExecutionLog` or `EdgeOutcome`. Old logs without this field
+/// default to 1 (the first versioned schema).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ExecutionLog {
+    #[serde(
+        default = "default_schema_version",
+        skip_serializing_if = "is_default_schema_version"
+    )]
+    pub schema_version: u32, // omitted when 1 to keep old log files compact
     pub steps: Vec<StepLog>,
     pub total_duration_ms: u64,
     pub total_steps: usize,
@@ -31,6 +50,22 @@ pub struct ExecutionLog {
     /// can be reproduced by passing `--seed <value>` (with matching concurrency).
     #[serde(default)]
     pub seed: u64,
+}
+
+impl Default for ExecutionLog {
+    fn default() -> Self {
+        Self {
+            schema_version: default_schema_version(),
+            steps: Vec::new(),
+            total_duration_ms: 0,
+            total_steps: 0,
+            passed: 0,
+            failed: 0,
+            iterations: 0,
+            terminal_state: None,
+            seed: 0,
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

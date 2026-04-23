@@ -1,7 +1,7 @@
 use crate::assertions::SchemaCache;
 use crate::auth::fetch_oauth2_token;
 use crate::config::{RunConfig, RunError};
-use crate::edges::{default_edge_target, evaluate_edges};
+use crate::edges::{EdgeKey, default_edge_target, evaluate_edges};
 use crate::graph::Graph;
 use crate::http::execute_step;
 use crate::log::{ExecutionLog, StepFailure, StepLog};
@@ -126,7 +126,7 @@ async fn run_once(
     let run_start = std::time::Instant::now();
     let mut current_state = scenario.initial_state.clone();
     let max_iter = scenario.max_iterations.unwrap_or(100);
-    let mut edge_takes: HashMap<usize, u32> = HashMap::new();
+    let mut edge_takes: HashMap<EdgeKey, u32> = HashMap::new();
 
     let base_seed = config.seed.unwrap_or_else(rand::random);
     let task_seed = base_seed.wrapping_add(task_id as u64);
@@ -493,7 +493,7 @@ async fn run_branch(
     let mut steps_out: Vec<StepLog> = Vec::new();
     let mut stats = BranchStats::default();
     let mut current_state = start_state;
-    let mut edge_takes: HashMap<usize, u32> = HashMap::new();
+    let mut edge_takes: HashMap<EdgeKey, u32> = HashMap::new();
     let branch_path = vec![branch_name.clone()];
 
     loop {

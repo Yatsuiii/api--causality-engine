@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Produced for every edge considered in the winning pass (or for all edges
 /// when no pass matched). `outcome` says whether the edge fired, lost to a
-/// peer, or was rejected — and why. Persisted on `StepLog` so `ace show` /
-/// Tauri re-render offline.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// peer, or was rejected — and why. Persisted on `StepLog` so `ace show`
+/// can render causality offline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct EdgeEvaluation {
     pub to: String,
@@ -16,42 +16,40 @@ pub struct EdgeEvaluation {
     pub outcome: EdgeOutcome,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Flat outcome enum. Previously nested `Rejected(EdgeRejectReason)` which
+/// caused a duplicate `kind` field when serde serialized the inner tagged
+/// enum. Flattened variants have infinite headroom; older `ace show` binaries
+/// deserialize unknown variants as `Unknown` via `#[serde(other)]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EdgeOutcome {
     /// This edge won and drove the transition.
     Matched,
-    /// Edge condition did not match the response.
-    Rejected(EdgeRejectReason),
-    /// Condition matched but a higher-priority peer won.
-    LostPriority { winner_priority: i32 },
-    /// Condition matched at the top priority tier but lost a weighted roll.
-    LostWeightedRoll { weight: u32, total: u64 },
-    /// Edge was selected but its `max_takes` limit was already reached.
-    /// Surfaces alongside `RunError::EdgeMaxTakesExceeded`.
-    MaxTakesExceeded { limit: u32 },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-#[serde(tag = "reason", rename_all = "snake_case")]
-pub enum EdgeRejectReason {
-    StatusMismatch {
-        expected: String,
-        actual: u16,
-    },
-    BodyCheckFailed {
+    /// Edge condition did not match: HTTP status code mismatch.
+    RejectedStatusMismatch { expected: String, actual: u16 },
+    /// Edge condition did not match: body JSONPath check failed.
+    RejectedBodyCheckFailed {
         path: String,
         expected: String,
         actual: String,
     },
-    /// `condition.assertions: passed` was required but some assertion failed.
-    AssertionGateFailed {
-        failed_indices: Vec<usize>,
-    },
-    /// `condition.assertions: failed` was required but every assertion passed.
-    AssertionGateUnexpectedlyPassed,
+    /// `condition.assertions: passed` required but some assertions failed.
+    RejectedAssertionGateFailed { failed_indices: Vec<usize> },
+    /// `condition.assertions: failed` required but all assertions passed.
+    RejectedAssertionGateUnexpectedlyPassed,
+    /// Condition matched but a higher-priority peer won.
+    LostPriority { winner_priority: i32 },
+    /// Condition matched at the top priority tier but lost a weighted roll.
+    LostWeightedRoll { weight: u32, total: u64 },
+    /// Tied with peers at the same priority (no weights); first-in-list won.
+    /// Add `weight:` or reorder edges to make routing explicit.
+    LostTieBreak { winner_index: usize },
+    /// Edge was selected but its `max_takes` limit was already exhausted.
+    MaxTakesExceeded { limit: u32 },
+    /// Unknown variant from a newer ACE version — ignored gracefully.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Render a ValueCheck into a terse human string ("= 200", "contains 'x'",
@@ -102,28 +100,41 @@ fn render_json(v: &serde_json::Value) -> String {
 mod tests {
     use super::*;
 
-    /// Regression: `EdgeOutcome` and `EdgeRejectReason` both used `tag = "kind"`,
-    /// producing duplicate-`kind` JSON on `Rejected(...)` that `ace show`
-    /// refused to parse. Keep tags distinct (`kind` / `reason`) so rejected
-    /// outcomes round-trip through the log.
     #[test]
-    fn rejected_outcome_round_trips_through_json() {
+    fn rejected_status_mismatch_round_trips() {
         let eval = EdgeEvaluation {
             to: "done".into(),
             tag: None,
-            outcome: EdgeOutcome::Rejected(EdgeRejectReason::StatusMismatch {
+            outcome: EdgeOutcome::RejectedStatusMismatch {
                 expected: "200".into(),
                 actual: 500,
-            }),
+            },
         };
         let json = serde_json::to_string(&eval).expect("serialize");
         let back: EdgeEvaluation = serde_json::from_str(&json).expect("round trip");
         assert_eq!(back.to, "done");
         match back.outcome {
-            EdgeOutcome::Rejected(EdgeRejectReason::StatusMismatch { actual, .. }) => {
-                assert_eq!(actual, 500);
-            }
-            other => panic!("expected Rejected(StatusMismatch), got {:?}", other),
+            EdgeOutcome::RejectedStatusMismatch { actual, .. } => assert_eq!(actual, 500),
+            other => panic!("expected RejectedStatusMismatch, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn unknown_variant_deserializes_gracefully() {
+        let json = r#"{"to":"x","outcome":{"kind":"future_variant_not_yet_known"}}"#;
+        let back: EdgeEvaluation = serde_json::from_str(json).expect("round trip");
+        assert_eq!(back.outcome, EdgeOutcome::Unknown);
+    }
+
+    #[test]
+    fn lost_tie_break_round_trips() {
+        let eval = EdgeEvaluation {
+            to: "b".into(),
+            tag: None,
+            outcome: EdgeOutcome::LostTieBreak { winner_index: 0 },
+        };
+        let json = serde_json::to_string(&eval).expect("serialize");
+        let back: EdgeEvaluation = serde_json::from_str(&json).expect("round trip");
+        assert!(matches!(back.outcome, EdgeOutcome::LostTieBreak { winner_index: 0 }));
     }
 }

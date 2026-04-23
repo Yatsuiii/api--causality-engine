@@ -1,8 +1,6 @@
 use crate::error::{CliError, load_execution_log};
 use colored::Colorize;
-use engine::{
-    EdgeEvaluation, EdgeOutcome, EdgeRejectReason, ExecutionLog, RunError, StepFailure, StepLog,
-};
+use engine::{EdgeEvaluation, EdgeOutcome, ExecutionLog, RunError, StepFailure, StepLog};
 use std::io::Write;
 
 // ---------------------------------------------------------------------------
@@ -75,15 +73,40 @@ fn render_edge_evaluation(eval: &EdgeEvaluation, step_failed: bool) -> String {
         .unwrap_or_default();
     let target = format!("→ {}{}", eval.to, tag_suffix);
     match &eval.outcome {
-        // Green check only when the surrounding step passed; neutral arrow when
-        // the step failed so the ✓ doesn't visually contradict the ✗ header.
+        // Green check only when the surrounding step passed; neutral dot when
+        // the step failed so ✓ doesn't visually contradict the ✗ header.
         EdgeOutcome::Matched if step_failed => format!("{} {}", "·".dimmed(), target.dimmed()),
         EdgeOutcome::Matched => format!("{} {}", "✓".green().bold(), target.cyan()),
-        EdgeOutcome::Rejected(reason) => format!(
+        EdgeOutcome::RejectedStatusMismatch { expected, actual } => format!(
             "{} {}  [{}]",
             "✗".red().bold(),
             target.red(),
-            render_reject_reason(reason).yellow()
+            format!("status: expected {}, got {}", expected, actual).yellow()
+        ),
+        EdgeOutcome::RejectedBodyCheckFailed { path, expected, actual } => {
+            let actual_display = if actual.is_empty() {
+                "<missing>"
+            } else {
+                actual.as_str()
+            };
+            format!(
+                "{} {}  [{}]",
+                "✗".red().bold(),
+                target.red(),
+                format!("body {}: {} (got {})", path, expected, actual_display).yellow()
+            )
+        }
+        EdgeOutcome::RejectedAssertionGateFailed { failed_indices } => format!(
+            "{} {}  [{}]",
+            "✗".red().bold(),
+            target.red(),
+            format!("gate: assertions {:?} failed", failed_indices).yellow()
+        ),
+        EdgeOutcome::RejectedAssertionGateUnexpectedlyPassed => format!(
+            "{} {}  [{}]",
+            "✗".red().bold(),
+            target.red(),
+            "gate: expected failing assertions but all passed".yellow()
         ),
         EdgeOutcome::LostPriority { winner_priority } => format!(
             "{} {}  [{}]",
@@ -97,38 +120,23 @@ fn render_edge_evaluation(eval: &EdgeEvaluation, step_failed: bool) -> String {
             target.dimmed(),
             format!("lost weighted roll {}/{}", weight, total).dimmed()
         ),
+        EdgeOutcome::LostTieBreak { winner_index } => format!(
+            "{} {}  [{}]",
+            "⋯".dimmed(),
+            target.dimmed(),
+            format!(
+                "unweighted tie, edge[{}] won — add weight: or reorder",
+                winner_index
+            )
+            .dimmed()
+        ),
         EdgeOutcome::MaxTakesExceeded { limit } => format!(
             "{} {}  [{}]",
             "✗".red().bold(),
             target.red(),
             format!("max_takes limit {} reached", limit).yellow()
         ),
-    }
-}
-
-fn render_reject_reason(reason: &EdgeRejectReason) -> String {
-    match reason {
-        EdgeRejectReason::StatusMismatch { expected, actual } => {
-            format!("status: expected {}, got {}", expected, actual)
-        }
-        EdgeRejectReason::BodyCheckFailed {
-            path,
-            expected,
-            actual,
-        } => {
-            let actual_display = if actual.is_empty() {
-                "<missing>".into()
-            } else {
-                actual.clone()
-            };
-            format!("body {}: {} (got {})", path, expected, actual_display)
-        }
-        EdgeRejectReason::AssertionGateFailed { failed_indices } => {
-            format!("gate: assertions {:?} failed", failed_indices)
-        }
-        EdgeRejectReason::AssertionGateUnexpectedlyPassed => {
-            "gate: expected failing assertions but all passed".into()
-        }
+        EdgeOutcome::Unknown => format!("{} {}  [unknown outcome]", "·".dimmed(), target.dimmed()),
     }
 }
 
@@ -370,26 +378,37 @@ pub fn result_from_log(log: &ExecutionLog) -> Result<String, RunError> {
     if let Some(step) = log.steps.last()
         && let Some(ref f) = step.failure
     {
-        return Err(match f {
-            StepFailure::NoMatch => RunError::NoMatchingTransition {
-                state: step.state_before.clone(),
-                status: step.status,
-            },
-            StepFailure::MaxTakesExceeded { to, limit } => RunError::EdgeMaxTakesExceeded {
-                state: step.state_before.clone(),
-                to: to.clone(),
-                limit: *limit,
-            },
-            StepFailure::ExtractionMissing { key, path } => RunError::ExtractionMissing {
-                step: step.step_name.clone(),
-                key: key.clone(),
-                path: path.clone(),
-            },
-            StepFailure::HttpError { message } => RunError::HttpError {
-                step: step.step_name.clone(),
-                message: message.clone(),
-            },
-        });
+        match f {
+            StepFailure::NoMatch => {
+                return Err(RunError::NoMatchingTransition {
+                    state: step.state_before.clone(),
+                    status: step.status,
+                });
+            }
+            StepFailure::MaxTakesExceeded { to, limit } => {
+                return Err(RunError::EdgeMaxTakesExceeded {
+                    state: step.state_before.clone(),
+                    to: to.clone(),
+                    limit: *limit,
+                });
+            }
+            StepFailure::ExtractionMissing { key, path } => {
+                return Err(RunError::ExtractionMissing {
+                    step: step.step_name.clone(),
+                    key: key.clone(),
+                    path: path.clone(),
+                });
+            }
+            StepFailure::HttpError { message } => {
+                return Err(RunError::HttpError {
+                    step: step.step_name.clone(),
+                    message: message.clone(),
+                });
+            }
+            // Unknown variant from a newer ACE version — fall through to
+            // assertion scan so we report something rather than panicking.
+            StepFailure::Unknown => {}
+        }
     }
 
     let failures: Vec<_> = log
@@ -489,6 +508,7 @@ mod tests {
             iterations: 1,
             terminal_state: Some(state_after.into()),
             seed: 0,
+            schema_version: 1,
         }
     }
 
@@ -522,6 +542,7 @@ mod tests {
             iterations: 1,
             terminal_state: None,
             seed: 0,
+            schema_version: 1,
         }
     }
 
@@ -529,7 +550,7 @@ mod tests {
     /// no failing assertions, `state_before == state_after`, and every edge
     /// evaluation is a non-Matched outcome.
     fn no_match_log(status: u16) -> ExecutionLog {
-        use engine::{EdgeEvaluation, EdgeOutcome, EdgeRejectReason};
+        use engine::{EdgeEvaluation, EdgeOutcome};
         ExecutionLog {
             steps: vec![StepLog {
                 step_name: "call".into(),
@@ -547,10 +568,10 @@ mod tests {
                 edge_evaluations: vec![EdgeEvaluation {
                     to: "done".into(),
                     tag: None,
-                    outcome: EdgeOutcome::Rejected(EdgeRejectReason::StatusMismatch {
+                    outcome: EdgeOutcome::RejectedStatusMismatch {
                         expected: "200".into(),
                         actual: status,
-                    }),
+                    },
                 }],
                 failure: Some(StepFailure::NoMatch),
             }],
@@ -561,6 +582,7 @@ mod tests {
             iterations: 1,
             terminal_state: None,
             seed: 0,
+            schema_version: 1,
         }
     }
 
@@ -636,6 +658,7 @@ mod tests {
             iterations: 1,
             terminal_state: None,
             seed: 0,
+            schema_version: 1,
         };
         assert!(
             result_from_log(&log).is_ok(),
@@ -692,6 +715,7 @@ mod tests {
             iterations: 2,
             terminal_state: None,
             seed: 0,
+            schema_version: 1,
         };
         match result_from_log(&log) {
             Err(RunError::NoMatchingTransition { state, status }) => {
@@ -716,6 +740,7 @@ mod tests {
             iterations: 0,
             terminal_state: None,
             seed: 0,
+            schema_version: 1,
         };
         assert_eq!(result_from_log(&log).unwrap(), "unknown");
     }

@@ -16,4 +16,4 @@ pub use config::{RunConfig, RunError};
 pub use http::compute_retry_delay;
 pub use log::{ExecutionLog, StepFailure, StepLog};
 pub use runner::run;
-pub use trace::{EdgeEvaluation, EdgeOutcome, EdgeRejectReason};
+pub use trace::{EdgeEvaluation, EdgeOutcome};
