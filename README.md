@@ -16,6 +16,33 @@ ACE fixes that. You describe your API workflow as a state graph — login, creat
 
 Not a Postman replacement. A workflow-testing CLI for multi-step API flows and CI/CD pipelines.
 
+## Why ACE over Postman / Bruno / k6
+
+Postman tells you a request failed. ACE tells you why staging and prod took different paths.
+
+Model your flows as state machines, run them against both environments, diff the traces. One command shows you exactly which edge matched in staging, which was rejected in prod, and what the response said when it rejected:
+
+```
+$ ace run scenario.yaml -o staging.json
+$ ace run scenario.yaml --var base_url=https://prod.api.com -o prod.json
+$ ace diff staging.json prod.json
+
+User 1 / step "checkout"
+  ↯ routing diverged
+      trace-a: matched edge a3f2b1c4 → paid
+      trace-b: rejected edge a3f2b1c4 → paid  [status: expected 200, got 503]
+               matched edge   7d81e920 → retry_queued
+
+User 1 / step "poll_status"
+  ⚠ different rejection reason on edge b2c8f019
+      trace-a: body .state: expected = "ok", got "pending"
+      trace-b: body .state: expected = "ok", got "failed"
+
+2 divergence(s) across 5 step(s).
+```
+
+That output is the diff between staging and prod — not "something is broken in prod" but "the checkout edge that routes to `paid` is being rejected in prod because the server returned 503, not 200, and the poll_status edge is seeing a different body value." Postman can't show you that. k6 can't show you that. `ace diff` does it in one command.
+
 ## Why
 
 Standard API tools test one request at a time. Production failures happen across request chains — the token extracted in step 1 is invalid by step 3, or a 202 in step 2 means you need to poll before step 4 can succeed. You can't catch that with isolated tests.
@@ -90,6 +117,7 @@ ace run scenario.yaml --junit report.xml   # JUnit output for CI
 ace validate scenario.yaml         # catch graph/variable errors without running
 ace validate scenario.yaml --graph # print resolved state graph
 ace show execution_log.json        # re-render a recorded run (no re-execution)
+ace diff staging.json prod.json    # diff two execution logs — show routing divergences
 ace report execution_log.json      # convert a run log to JSON or JUnit
 ace import collection.json         # convert a Postman collection to ACE YAML
 ace mock scenario.yaml             # spin up a mock server from a scenario
