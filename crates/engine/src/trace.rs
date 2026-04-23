@@ -1,5 +1,7 @@
-use model::ValueCheck;
+use model::{Edge, ValueCheck};
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 /// One edge's outcome during transition evaluation.
 ///
@@ -10,10 +12,30 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct EdgeEvaluation {
+    /// Stable 8-hex identity for this edge definition. Computed from
+    /// (from, to, when-tag, tag, priority) so two traces can be aligned
+    /// even when multiple edges share the same `to` state.
+    /// Old logs without this field deserialize to empty string; diff falls
+    /// back to (from, to, tag) matching.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub edge_id: String,
     pub to: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     pub outcome: EdgeOutcome,
+}
+
+/// Compute a stable 8-hex identity for an edge.
+/// Uses DefaultHasher — not cryptographic, but stable within a compiled binary.
+pub fn edge_id(edge: &Edge) -> String {
+    let mut h = DefaultHasher::new();
+    edge.from.hash(&mut h);
+    edge.to.hash(&mut h);
+    edge.tag.hash(&mut h);
+    edge.priority.hash(&mut h);
+    // Include when-clause discriminant to distinguish conditional vs unconditional.
+    edge.when.is_some().hash(&mut h);
+    format!("{:016x}", h.finish())[..8].to_string()
 }
 
 /// Flat outcome enum. Previously nested `Rejected(EdgeRejectReason)` which
@@ -99,10 +121,22 @@ fn render_json(v: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use model::Edge;
+
+    fn make_edge(from: &str, to: &str, priority: Option<i32>, tag: Option<&str>) -> Edge {
+        Edge {
+            from: from.into(),
+            to: to.into(),
+            priority,
+            tag: tag.map(|s| s.into()),
+            ..Edge::default()
+        }
+    }
 
     #[test]
     fn rejected_status_mismatch_round_trips() {
         let eval = EdgeEvaluation {
+            edge_id: "abc12345".into(),
             to: "done".into(),
             tag: None,
             outcome: EdgeOutcome::RejectedStatusMismatch {
@@ -129,6 +163,7 @@ mod tests {
     #[test]
     fn lost_tie_break_round_trips() {
         let eval = EdgeEvaluation {
+            edge_id: String::new(),
             to: "b".into(),
             tag: None,
             outcome: EdgeOutcome::LostTieBreak { winner_index: 0 },
@@ -139,5 +174,40 @@ mod tests {
             back.outcome,
             EdgeOutcome::LostTieBreak { winner_index: 0 }
         ));
+    }
+
+    #[test]
+    fn edge_id_stable_across_runs() {
+        let e = make_edge("start", "done", None, None);
+        assert_eq!(edge_id(&e), edge_id(&e));
+    }
+
+    #[test]
+    fn edge_id_changes_on_priority_bump() {
+        let e1 = make_edge("start", "done", Some(1), None);
+        let e2 = make_edge("start", "done", Some(10), None);
+        assert_ne!(edge_id(&e1), edge_id(&e2));
+    }
+
+    #[test]
+    fn edge_id_survives_round_trip() {
+        let e = make_edge("a", "b", Some(5), Some("mytag"));
+        let id = edge_id(&e);
+        let eval = EdgeEvaluation {
+            edge_id: id.clone(),
+            to: "b".into(),
+            tag: Some("mytag".into()),
+            outcome: EdgeOutcome::Matched,
+        };
+        let json = serde_json::to_string(&eval).expect("serialize");
+        let back: EdgeEvaluation = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.edge_id, id);
+    }
+
+    #[test]
+    fn old_log_without_edge_id_deserializes_to_empty() {
+        let json = r#"{"to":"done","outcome":{"kind":"matched"}}"#;
+        let back: EdgeEvaluation = serde_json::from_str(json).expect("round trip");
+        assert_eq!(back.edge_id, "");
     }
 }

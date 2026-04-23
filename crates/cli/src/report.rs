@@ -225,6 +225,7 @@ mod tests {
                 request_body: None,
                 response_body: None,
                 edge_evaluations: vec![EdgeEvaluation {
+                    edge_id: String::new(),
                     to: "done".into(),
                     tag: None,
                     outcome: EdgeOutcome::RejectedStatusMismatch {
@@ -288,6 +289,7 @@ mod tests {
                 request_body: None,
                 response_body: None,
                 edge_evaluations: vec![EdgeEvaluation {
+                    edge_id: String::new(),
                     to: "waiting".into(),
                     tag: None,
                     outcome: EdgeOutcome::Matched,

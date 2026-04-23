@@ -32,6 +32,7 @@ pub(crate) fn evaluate_edges(
 
     let make_eval = |idx: usize, outcome: EdgeOutcome| -> EdgeEvaluation {
         EdgeEvaluation {
+            edge_id: trace::edge_id(edges[idx]),
             to: edges[idx].to.clone(),
             tag: edges[idx].tag.clone(),
             outcome,
@@ -107,6 +108,7 @@ fn choose_from(
             top.push(i);
         } else {
             evaluations.push(EdgeEvaluation {
+                edge_id: trace::edge_id(edges[i]),
                 to: edges[i].to.clone(),
                 tag: edges[i].tag.clone(),
                 outcome: EdgeOutcome::LostPriority {
@@ -119,6 +121,7 @@ fn choose_from(
     if top.len() == 1 {
         let winner = top[0];
         evaluations.push(EdgeEvaluation {
+            edge_id: trace::edge_id(edges[winner]),
             to: edges[winner].to.clone(),
             tag: edges[winner].tag.clone(),
             outcome: EdgeOutcome::Matched,
@@ -132,12 +135,14 @@ fn choose_from(
         // the user knows why — add `weight:` or reorder to make it explicit.
         let winner = top[0];
         evaluations.push(EdgeEvaluation {
+            edge_id: trace::edge_id(edges[winner]),
             to: edges[winner].to.clone(),
             tag: edges[winner].tag.clone(),
             outcome: EdgeOutcome::Matched,
         });
         for &i in &top[1..] {
             evaluations.push(EdgeEvaluation {
+                edge_id: trace::edge_id(edges[i]),
                 to: edges[i].to.clone(),
                 tag: edges[i].tag.clone(),
                 outcome: EdgeOutcome::LostTieBreak {
@@ -152,6 +157,7 @@ fn choose_from(
     if total == 0 {
         let winner = top[0];
         evaluations.push(EdgeEvaluation {
+            edge_id: trace::edge_id(edges[winner]),
             to: edges[winner].to.clone(),
             tag: edges[winner].tag.clone(),
             outcome: EdgeOutcome::Matched,
@@ -174,12 +180,14 @@ fn choose_from(
     for &i in &top {
         if i == winner {
             evaluations.push(EdgeEvaluation {
+                edge_id: trace::edge_id(edges[i]),
                 to: edges[i].to.clone(),
                 tag: edges[i].tag.clone(),
                 outcome: EdgeOutcome::Matched,
             });
         } else {
             evaluations.push(EdgeEvaluation {
+                edge_id: trace::edge_id(edges[i]),
                 to: edges[i].to.clone(),
                 tag: edges[i].tag.clone(),
                 outcome: EdgeOutcome::LostWeightedRoll {

@@ -1,3 +1,4 @@
+mod diff;
 mod docs;
 mod error;
 mod import;
@@ -181,6 +182,23 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
+
+    /// Diff two execution logs and show routing divergences
+    Diff {
+        /// Path to trace A (e.g. staging.json)
+        trace_a: String,
+
+        /// Path to trace B (e.g. prod.json)
+        trace_b: String,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+
+        /// Write output to file instead of stdout
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {
@@ -243,6 +261,12 @@ async fn main() {
         Commands::Import { collection, output } => import::cmd_import(&collection, &output),
         Commands::Mock { scenario, port } => mock::cmd_mock(&scenario, port).await,
         Commands::Docs { scenario, output } => docs::cmd_docs(&scenario, output),
+        Commands::Diff {
+            trace_a,
+            trace_b,
+            format,
+            output,
+        } => diff::cmd_diff(&trace_a, &trace_b, &format, output),
     };
 
     if let Err(e) = result {

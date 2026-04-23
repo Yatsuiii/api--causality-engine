@@ -135,6 +135,7 @@ mod tests {
                 request_body: None,
                 response_body: None,
                 edge_evaluations: vec![EdgeEvaluation {
+                    edge_id: String::new(),
                     to: "done".into(),
                     tag: None,
                     outcome: EdgeOutcome::RejectedStatusMismatch {
