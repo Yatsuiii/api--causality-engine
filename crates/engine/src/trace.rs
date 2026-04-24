@@ -1,7 +1,5 @@
 use model::{Edge, ValueCheck};
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 /// One edge's outcome during transition evaluation.
 ///
@@ -26,16 +24,19 @@ pub struct EdgeEvaluation {
 }
 
 /// Compute a stable 8-hex identity for an edge.
-/// Uses DefaultHasher — not cryptographic, but stable within a compiled binary.
+/// Uses FNV-1a over a canonical debug payload. It is not cryptographic; it is
+/// only intended to keep trace alignment stable across runs and binaries.
 pub fn edge_id(edge: &Edge) -> String {
-    let mut h = DefaultHasher::new();
-    edge.from.hash(&mut h);
-    edge.to.hash(&mut h);
-    edge.tag.hash(&mut h);
-    edge.priority.hash(&mut h);
-    // Include when-clause discriminant to distinguish conditional vs unconditional.
-    edge.when.is_some().hash(&mut h);
-    format!("{:016x}", h.finish())[..8].to_string()
+    let payload = format!(
+        "{}|{}|{:?}|{:?}|{:?}",
+        edge.from, edge.to, edge.when, edge.tag, edge.priority
+    );
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in payload.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")[..8].to_string()
 }
 
 /// Flat outcome enum. Previously nested `Rejected(EdgeRejectReason)` which
@@ -186,6 +187,23 @@ mod tests {
     fn edge_id_changes_on_priority_bump() {
         let e1 = make_edge("start", "done", Some(1), None);
         let e2 = make_edge("start", "done", Some(10), None);
+        assert_ne!(edge_id(&e1), edge_id(&e2));
+    }
+
+    #[test]
+    fn edge_id_changes_on_condition_change() {
+        let mut e1 = make_edge("start", "done", None, None);
+        e1.when = Some(model::TransitionCondition {
+            status: Some(model::StatusMatch::Exact(200)),
+            body: None,
+            assertions: None,
+        });
+        let mut e2 = make_edge("start", "done", None, None);
+        e2.when = Some(model::TransitionCondition {
+            status: Some(model::StatusMatch::Exact(503)),
+            body: None,
+            assertions: None,
+        });
         assert_ne!(edge_id(&e1), edge_id(&e2));
     }
 

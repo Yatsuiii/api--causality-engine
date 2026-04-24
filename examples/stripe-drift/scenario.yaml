@@ -1,0 +1,35 @@
+name: subscription renewal
+initial_state: fetch_subscription
+terminal_states: [done, upgrade_required, error]
+
+variables:
+  base_url: http://localhost:12201
+  api_key: sk_test_demo
+  sub_id: sub_123
+
+steps:
+  - name: fetch_subscription
+    state: fetch_subscription
+    method: GET
+    url: "{{base_url}}/v1/subscriptions/{{sub_id}}"
+    headers:
+      Authorization: "Bearer {{api_key}}"
+    assert:
+      - status: 200
+      # Client written against Stripe API 2022-11-15: expects `current_period_end`
+      # at the root of the subscription object. In 2026-04-22 Stripe moved this
+      # onto subscription items and dropped the root-level field entirely.
+      - body:
+          current_period_end: { exists: true }
+
+  - name: apply_discount
+    state: apply_discount
+    method: GET
+    url: "{{base_url}}/v1/subscriptions/{{sub_id}}"
+    headers:
+      Authorization: "Bearer {{api_key}}"
+
+edges:
+  - { from: fetch_subscription, to: apply_discount,    when: { assertions: passed } }
+  - { from: fetch_subscription, to: upgrade_required,  default: true }
+  - { from: apply_discount,     to: done,              default: true }

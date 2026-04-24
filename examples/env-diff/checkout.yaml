@@ -1,0 +1,70 @@
+name: checkout flow
+initial_state: login
+terminal_states: [done, error]
+
+variables:
+  base_url: http://localhost:9101
+  email: demo@example.com
+  password: hunter2
+  cart_total: 42.00
+
+steps:
+  - name: login
+    state: login
+    method: POST
+    url: "{{base_url}}/auth/login"
+    body:
+      email: "{{email}}"
+      password: "{{password}}"
+    assert:
+      - status: 200
+      - body:
+          token: { exists: true }
+    extract:
+      token: token
+
+  - name: checkout
+    state: checkout
+    method: POST
+    url: "{{base_url}}/orders/checkout"
+    headers:
+      Authorization: "Bearer {{token}}"
+    body:
+      total: "{{cart_total}}"
+    assert:
+      - status: 200
+      - body:
+          status: { exists: true }
+          id: { exists: true }
+    extract:
+      order_id: id
+
+  - name: poll_status
+    state: poll_status
+    method: GET
+    url: "{{base_url}}/orders/{{order_id}}"
+    headers:
+      Authorization: "Bearer {{token}}"
+    assert:
+      - status: 200
+
+  - name: retry_queued
+    state: retry_queued
+    method: POST
+    url: "{{base_url}}/orders/queue/retry"
+    body:
+      reason: "auto-retry"
+
+  - name: auth_failed
+    state: auth_failed
+    method: GET
+    url: "{{base_url}}/health"
+
+edges:
+  - { from: login,       to: checkout,      when: { assertions: passed } }
+  - { from: login,       to: auth_failed,   default: true }
+  - { from: checkout,    to: poll_status,   when: { assertions: passed } }
+  - { from: checkout,    to: retry_queued,  default: true }
+  - { from: poll_status, to: done,          default: true }
+  - { from: retry_queued, to: done,         default: true }
+  - { from: auth_failed, to: error,         default: true }

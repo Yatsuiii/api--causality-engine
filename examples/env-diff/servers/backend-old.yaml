@@ -1,0 +1,41 @@
+name: backend (old schema — emits `status` field)
+initial_state: login
+terminal_states: [done]
+
+# Path parameter placeholder. `ace mock` treats `{{name}}` segments as
+# wildcards when matching the request path, so the literal value is unused —
+# declaring it here just keeps the validator happy.
+variables:
+  order_id: ""
+
+steps:
+  - name: login
+    state: login
+    method: POST
+    url: "/auth/login"
+    assert:
+      - status: 200
+    extract:
+      t: token
+
+  - name: checkout
+    state: checkout
+    method: POST
+    url: "/orders/checkout"
+    assert:
+      - status: 200
+    extract:
+      s: status
+      i: id
+
+  - name: poll
+    state: poll
+    method: GET
+    url: "/orders/{{order_id}}"
+    assert:
+      - status: 200
+
+edges:
+  - { from: login,    to: checkout, default: true }
+  - { from: checkout, to: poll,     default: true }
+  - { from: poll,     to: done,     default: true }

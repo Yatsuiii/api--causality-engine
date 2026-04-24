@@ -1,4 +1,5 @@
 use crate::error::CliError;
+use engine::assertions::AssertionResult;
 use engine::trace::{EdgeEvaluation, EdgeOutcome};
 use engine::{ExecutionLog, StepLog};
 use serde::Serialize;
@@ -9,6 +10,7 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 pub fn cmd_diff(a: &str, b: &str, format: &str, output: Option<String>) -> Result<(), CliError> {
+    let format = DiffFormat::parse(format)?;
     let logs_a = load_logs(a)?;
     let logs_b = load_logs(b)?;
 
@@ -26,8 +28,8 @@ pub fn cmd_diff(a: &str, b: &str, format: &str, output: Option<String>) -> Resul
     }
 
     let text = match format {
-        "json" => render_json_output(&all_divergences, total_steps),
-        _ => render_text(&all_divergences, total_steps),
+        DiffFormat::Json => render_json_output(&all_divergences, total_steps),
+        DiffFormat::Text => render_text(&all_divergences, total_steps),
     };
 
     match output {
@@ -41,7 +43,25 @@ pub fn cmd_diff(a: &str, b: &str, format: &str, output: Option<String>) -> Resul
     if all_divergences.is_empty() {
         Ok(())
     } else {
-        Err(CliError::BadArgument("divergences found".into()))
+        Err(CliError::DiffFound)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DiffFormat {
+    Text,
+    Json,
+}
+
+impl DiffFormat {
+    fn parse(raw: &str) -> Result<Self, CliError> {
+        match raw {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            other => Err(CliError::BadArgument(format!(
+                "invalid diff format '{other}' (expected 'text' or 'json')"
+            ))),
+        }
     }
 }
 
@@ -334,9 +354,17 @@ fn effective_id(ev: &EdgeEvaluation, step: &StepLog) -> String {
     if !ev.edge_id.is_empty() {
         ev.edge_id.clone()
     } else {
-        // Fallback for old logs without edge_id
-        format!("{}:{}", step.state_before, ev.to)
+        fallback_edge_id(step, ev)
     }
+}
+
+fn fallback_edge_id(step: &StepLog, ev: &EdgeEvaluation) -> String {
+    format!(
+        "{}:{}:{}",
+        step.state_before,
+        ev.to,
+        ev.tag.as_deref().unwrap_or("")
+    )
 }
 
 fn outcome_summary_for_step(step: &StepLog) -> String {
@@ -355,11 +383,11 @@ fn build_route_info(step: &StepLog) -> RouteInfo {
         .filter(|e| !matches!(e.outcome, EdgeOutcome::Matched))
         .map(|e| RejectedEdge {
             edge_id: if e.edge_id.is_empty() {
-                format!("{}:{}", step.state_before, e.to)
+                fallback_edge_id(step, e)
             } else {
                 e.edge_id.clone()
             },
-            reason: outcome_reason(&e.outcome),
+            reason: outcome_reason(&e.outcome, &step.assertions),
         })
         .collect();
     RouteInfo {
@@ -375,16 +403,16 @@ fn rejection_map(step: &StepLog) -> HashMap<String, String> {
         .filter(|e| !matches!(e.outcome, EdgeOutcome::Matched))
         .map(|e| {
             let id = if e.edge_id.is_empty() {
-                format!("{}:{}", step.state_before, e.to)
+                fallback_edge_id(step, e)
             } else {
                 e.edge_id.clone()
             };
-            (id, outcome_reason(&e.outcome))
+            (id, outcome_reason(&e.outcome, &step.assertions))
         })
         .collect()
 }
 
-fn outcome_reason(o: &EdgeOutcome) -> String {
+fn outcome_reason(o: &EdgeOutcome, assertions: &[AssertionResult]) -> String {
     match o {
         EdgeOutcome::RejectedStatusMismatch { expected, actual } => {
             format!("status: expected {expected}, got {actual}")
@@ -395,7 +423,7 @@ fn outcome_reason(o: &EdgeOutcome) -> String {
             actual,
         } => format!("body {path}: expected {expected}, got \"{actual}\""),
         EdgeOutcome::RejectedAssertionGateFailed { failed_indices } => {
-            format!("assertions failed: {:?}", failed_indices)
+            format_failed_assertions(failed_indices, assertions)
         }
         EdgeOutcome::RejectedAssertionGateUnexpectedlyPassed => {
             "assertion gate: expected failure but all passed".into()
@@ -413,6 +441,36 @@ fn outcome_reason(o: &EdgeOutcome) -> String {
         EdgeOutcome::Matched => "matched".into(),
         EdgeOutcome::Unknown => "unknown".into(),
     }
+}
+
+/// Resolve failed-assertion indices into human-readable descriptions.
+///
+/// Historical format was `assertions failed: [1, 3]`. Indices alone force the
+/// reader to cross-reference the trace to know which assertion broke — a
+/// painful extra step when `ace diff` is the only output on screen. With the
+/// AssertionResult slice in hand we can render the actual failure text.
+fn format_failed_assertions(failed_indices: &[usize], assertions: &[AssertionResult]) -> String {
+    if failed_indices.is_empty() {
+        return "assertions failed".into();
+    }
+    let parts: Vec<String> = failed_indices
+        .iter()
+        .map(|i| match assertions.get(*i) {
+            Some(a) => {
+                let actual = if a.actual.is_empty() {
+                    "<missing>"
+                } else {
+                    a.actual.as_str()
+                };
+                format!(
+                    "{} (expected {}, got {})",
+                    a.description, a.expected, actual
+                )
+            }
+            None => format!("assertion[{i}]"),
+        })
+        .collect();
+    format!("assertions failed: {}", parts.join("; "))
 }
 
 // ---------------------------------------------------------------------------
@@ -577,6 +635,15 @@ mod tests {
         }
     }
 
+    fn tagged_matched_eval(edge_id: &str, to: &str, tag: &str) -> EdgeEvaluation {
+        EdgeEvaluation {
+            edge_id: edge_id.into(),
+            to: to.into(),
+            tag: Some(tag.into()),
+            outcome: EdgeOutcome::Matched,
+        }
+    }
+
     fn rejected_status(edge_id: &str, to: &str, expected: &str, actual: u16) -> EdgeEvaluation {
         EdgeEvaluation {
             edge_id: edge_id.into(),
@@ -717,6 +784,28 @@ mod tests {
     }
 
     #[test]
+    fn diff_fallback_matching_distinguishes_tags() {
+        let a = make_log(vec![make_step(
+            "s",
+            "a",
+            "b",
+            vec![tagged_matched_eval("", "b", "ok")],
+        )]);
+        let b = make_log(vec![make_step(
+            "s",
+            "a",
+            "b",
+            vec![tagged_matched_eval("", "b", "retry")],
+        )]);
+        let divs = run_diff(vec![a], vec![b]);
+        assert_eq!(divs.len(), 1);
+        assert!(matches!(
+            divs[0].kind,
+            DivergenceKind::RoutingDiverged { .. }
+        ));
+    }
+
+    #[test]
     fn diff_json_output_is_valid() {
         let a = make_log(vec![make_step(
             "pay",
@@ -763,5 +852,46 @@ mod tests {
             None,
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn diff_cli_returns_diff_found_without_bad_argument() {
+        use std::fs;
+        use tempfile::NamedTempFile;
+
+        let a = make_log(vec![make_step(
+            "login",
+            "start",
+            "logged_in",
+            vec![matched_eval("cafe0001", "logged_in")],
+        )]);
+        let b = make_log(vec![make_step(
+            "login",
+            "start",
+            "retry",
+            vec![matched_eval("cafe0002", "retry")],
+        )]);
+
+        let fa = NamedTempFile::new().unwrap();
+        let fb = NamedTempFile::new().unwrap();
+        let out = NamedTempFile::new().unwrap();
+        fs::write(fa.path(), serde_json::to_string(&vec![a]).unwrap()).unwrap();
+        fs::write(fb.path(), serde_json::to_string(&vec![b]).unwrap()).unwrap();
+
+        let result = cmd_diff(
+            fa.path().to_str().unwrap(),
+            fb.path().to_str().unwrap(),
+            "text",
+            Some(out.path().to_str().unwrap().to_string()),
+        );
+        assert!(matches!(result, Err(CliError::DiffFound)));
+        let rendered = fs::read_to_string(out.path()).unwrap();
+        assert!(rendered.contains("routing diverged"));
+    }
+
+    #[test]
+    fn diff_rejects_unknown_format() {
+        let result = DiffFormat::parse("xml");
+        assert!(matches!(result, Err(CliError::BadArgument(_))));
     }
 }

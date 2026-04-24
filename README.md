@@ -5,43 +5,43 @@
 [![Docker](https://img.shields.io/badge/ghcr.io-yatsuiii%2Face-blue?logo=docker)](https://github.com/Yatsuiii/api--causality-engine/pkgs/container/ace)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Your CI says "assertion failed." It doesn't say which request, which step, or what the system state was when it broke.**
+**ACE tells you why the same API workflow took a different path across environments.**
 
-ACE fixes that. You describe your API workflow as a state graph — login, create, verify, retry — and ACE validates the graph structure before running it, then executes it step by step and tells you exactly where and why it failed.
-
-```
-  [User 1] [login] --login--> [create_order] ✗ (503) 89ms
-    ✗ status == 201 — expected: 201, got: 503
-```
-
-Not a Postman replacement. A workflow-testing CLI for multi-step API flows and CI/CD pipelines.
-
-## Why ACE over Postman / Bruno / k6
-
-Postman tells you a request failed. ACE tells you why staging and prod took different paths.
-
-Model your flows as state machines, run them against both environments, diff the traces. One command shows you exactly which edge matched in staging, which was rejected in prod, and what the response said when it rejected:
+Model your flow as a state machine, run it against staging and prod, diff the traces. One command shows which edge matched in staging, which was rejected in prod, and what the response said when it rejected:
 
 ```
-$ ace run scenario.yaml -o staging.json
-$ ace run scenario.yaml --var base_url=https://prod.api.com -o prod.json
+$ ace run scenario.yaml --var base_url=https://staging.api.com -o staging.json
+$ ace run scenario.yaml --var base_url=https://prod.api.com    -o prod.json
 $ ace diff staging.json prod.json
 
 User 1 / step "checkout"
   ↯ routing diverged
       trace-a: matched edge a3f2b1c4 → paid
-      trace-b: rejected edge a3f2b1c4 → paid  [status: expected 200, got 503]
-               matched edge   7d81e920 → retry_queued
+      trace-b: matched edge 7d81e920 → retry_queued
+               rejected edge a3f2b1c4  [assertions failed: body.status (expected exists: true, got <missing>)]
 
 User 1 / step "poll_status"
   ⚠ different rejection reason on edge b2c8f019
-      trace-a: body .state: expected = "ok", got "pending"
-      trace-b: body .state: expected = "ok", got "failed"
+      trace-a: body .state: expected "ok", got "pending"
+      trace-b: body .state: expected "ok", got "failed"
 
 2 divergence(s) across 5 step(s).
 ```
 
-That output is the diff between staging and prod — not "something is broken in prod" but "the checkout edge that routes to `paid` is being rejected in prod because the server returned 503, not 200, and the poll_status edge is seeing a different body value." Postman can't show you that. k6 can't show you that. `ace diff` does it in one command.
+That is the gap between staging and prod in one screen — not "something is broken" but "the checkout edge that routes to `paid` is being rejected in prod because `body.status` is missing, and the poll_status edge is seeing a different body value." Runnable example in [`examples/env-diff/`](examples/env-diff/).
+
+Not a Postman replacement. A workflow-testing CLI for multi-step API flows and CI/CD pipelines.
+
+## Why not diffy / OpenTelemetry / Pact?
+
+Prior art that solves adjacent problems:
+
+- **[diffy](https://github.com/twitter-archive/diffy)** shadow-traffics a request to two services and diffs the *responses*. Byte-level diff, no workflow model. ACE diffs *routing decisions* in a state graph — it tells you which edge matched and why, not just that the JSON differs.
+- **OpenTelemetry + Jaeger/Tempo** diff production spans across deploys. Requires traces to exist and agents to be deployed. ACE runs locally or in CI against any HTTP API — zero instrumentation on the target.
+- **Pact / contract tests** catch divergence at build time by pinning request/response shapes. They don't cover multi-step workflows where the interesting bug is which *path* the flow took.
+- **`diff <(curl a) <(curl b)`** is free and fine for one request. Falls apart the moment login tokens, extracted IDs, or conditional branching enter the picture.
+
+ACE's narrow claim: *diff the decisions a workflow made, not the bytes it returned.*
 
 ## Why
 
@@ -463,6 +463,7 @@ It won't handle every Postman feature, but it gets you a starting point instead 
 
 The `examples/` directory has runnable scenarios:
 
+- `env-diff/` — **staging vs prod divergence** — the headline use case for `ace diff`
 - `auth/` — bearer token flow, login and profile fetch
 - `branching/` — conditional transitions based on response
 - `fanout/` — parallel branches that rejoin at a named state

@@ -21,6 +21,8 @@ pub enum CliError {
     RunError,
     /// A user-supplied argument was invalid.
     BadArgument(String),
+    /// `ace diff` found real divergences. The diff has already been printed.
+    DiffFound,
 }
 
 impl fmt::Display for CliError {
@@ -35,6 +37,7 @@ impl fmt::Display for CliError {
                 write!(f, "One or more steps encountered a network or engine error")
             }
             CliError::BadArgument(msg) => write!(f, "{}", msg),
+            CliError::DiffFound => write!(f, "divergences found"),
         }
     }
 }
@@ -46,6 +49,7 @@ impl CliError {
     pub fn exit_code(&self) -> i32 {
         match self {
             CliError::RunFailed => 1,
+            CliError::DiffFound => 1,
             CliError::RunError => 2,
             _ => 2,
         }
@@ -53,6 +57,9 @@ impl CliError {
 
     /// Print the error to stderr with colour, then return the exit code.
     pub fn report(&self) -> i32 {
+        if matches!(self, CliError::DiffFound) {
+            return self.exit_code();
+        }
         eprintln!("{} {}", "error:".red().bold(), self);
         self.exit_code()
     }
