@@ -1,8 +1,8 @@
 # ACE — API Causality Engine
 
-[![CI](https://github.com/Yatsuiii/api--causality-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Yatsuiii/api--causality-engine/actions/workflows/ci.yml)
-[![Release](https://github.com/Yatsuiii/api--causality-engine/actions/workflows/release.yml/badge.svg)](https://github.com/Yatsuiii/api--causality-engine/releases)
-[![Docker](https://img.shields.io/badge/ghcr.io-yatsuiii%2Face-blue?logo=docker)](https://github.com/Yatsuiii/api--causality-engine/pkgs/container/ace)
+[![CI](https://github.com/Yatsuiii/api-causality-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Yatsuiii/api-causality-engine/actions/workflows/ci.yml)
+[![Release](https://github.com/Yatsuiii/api-causality-engine/actions/workflows/release.yml/badge.svg)](https://github.com/Yatsuiii/api-causality-engine/releases)
+[![Docker](https://img.shields.io/badge/ghcr.io-yatsuiii%2Face-blue?logo=docker)](https://github.com/Yatsuiii/api-causality-engine/pkgs/container/ace)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **ACE tells you why the same API workflow took a different path across environments.**
@@ -90,7 +90,7 @@ brew install ace
 
 **One-liner (Linux / macOS):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Yatsuiii/api--causality-engine/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Yatsuiii/api-causality-engine/main/install.sh | sh
 ```
 
 **Docker:**
@@ -99,11 +99,11 @@ docker run --rm -v $(pwd):/scenarios ghcr.io/yatsuiii/ace run scenario.yaml
 ```
 
 **Manual download:**
-Pre-built binaries for Linux (x86_64, aarch64), macOS (x86_64, Apple Silicon), and Windows on the [releases page](https://github.com/Yatsuiii/api--causality-engine/releases/latest).
+Pre-built binaries for Linux (x86_64, aarch64), macOS (x86_64, Apple Silicon), and Windows on the [releases page](https://github.com/Yatsuiii/api-causality-engine/releases/latest).
 
 **From source (requires Rust):**
 ```bash
-cargo install --git https://github.com/Yatsuiii/api--causality-engine ace
+cargo install --git https://github.com/Yatsuiii/api-causality-engine ace
 ```
 
 ## Usage

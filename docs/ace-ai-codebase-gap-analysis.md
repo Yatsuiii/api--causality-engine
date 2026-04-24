@@ -10,8 +10,8 @@ ACE already implements the deterministic workflow engine. It does not yet implem
 
 ### Client surfaces
 
-- CLI entrypoint and subcommands exist in [crates/cli/src/main.rs](/home/Yatsuiii/api--causality-engine/crates/cli/src/main.rs:1).
-- Desktop UI commands invoke scenario run and validation in [ui/tauri/src/commands/runner.rs](/home/Yatsuiii/api--causality-engine/ui/tauri/src/commands/runner.rs:1).
+- CLI entrypoint and subcommands exist in [crates/cli/src/main.rs](/home/Yatsuiii/api-causality-engine/crates/cli/src/main.rs:1).
+- Desktop UI commands invoke scenario run and validation in [ui/tauri/src/commands/runner.rs](/home/Yatsuiii/api-causality-engine/ui/tauri/src/commands/runner.rs:1).
 
 Architecture mapping:
 
@@ -20,10 +20,10 @@ Architecture mapping:
 
 ### Core execution engine
 
-- Scenario and step schemas live in [crates/model/src/lib.rs](/home/Yatsuiii/api--causality-engine/crates/model/src/lib.rs:1).
-- Validation logic lives in [crates/core/src/validate.rs](/home/Yatsuiii/api--causality-engine/crates/core/src/validate.rs:1).
-- Deterministic workflow execution lives in [crates/runner/src/lib.rs](/home/Yatsuiii/api--causality-engine/crates/runner/src/lib.rs:1).
-- CLI orchestration of validation, run, and reporting lives in [crates/cli/src/run.rs](/home/Yatsuiii/api--causality-engine/crates/cli/src/run.rs:1).
+- Scenario and step schemas live in [crates/model/src/lib.rs](/home/Yatsuiii/api-causality-engine/crates/model/src/lib.rs:1).
+- Validation logic lives in [crates/core/src/validate.rs](/home/Yatsuiii/api-causality-engine/crates/core/src/validate.rs:1).
+- Deterministic workflow execution lives in [crates/runner/src/lib.rs](/home/Yatsuiii/api-causality-engine/crates/runner/src/lib.rs:1).
+- CLI orchestration of validation, run, and reporting lives in [crates/cli/src/run.rs](/home/Yatsuiii/api-causality-engine/crates/cli/src/run.rs:1).
 
 Architecture mapping:
 
@@ -32,9 +32,9 @@ Architecture mapping:
 
 ### Trace generation
 
-- `ExecutionLog` and `StepLog` already capture structured run data in [crates/runner/src/lib.rs](/home/Yatsuiii/api--causality-engine/crates/runner/src/lib.rs:73).
-- JSON and JUnit reporting exist in [crates/cli/src/report.rs](/home/Yatsuiii/api--causality-engine/crates/cli/src/report.rs:1).
-- Tauri persists history entries after runs in [ui/tauri/src/commands/runner.rs](/home/Yatsuiii/api--causality-engine/ui/tauri/src/commands/runner.rs:1).
+- `ExecutionLog` and `StepLog` already capture structured run data in [crates/runner/src/lib.rs](/home/Yatsuiii/api-causality-engine/crates/runner/src/lib.rs:73).
+- JSON and JUnit reporting exist in [crates/cli/src/report.rs](/home/Yatsuiii/api-causality-engine/crates/cli/src/report.rs:1).
+- Tauri persists history entries after runs in [ui/tauri/src/commands/runner.rs](/home/Yatsuiii/api-causality-engine/ui/tauri/src/commands/runner.rs:1).
 
 Architecture mapping:
 

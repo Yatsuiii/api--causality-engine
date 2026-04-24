@@ -4,7 +4,7 @@ version = "0.1.7"
 edition = "2024"
 authors = ["Yatsuiii"]
 license = "MIT"
-repository = "https://github.com/Yatsuiii/api--causality-engine"
+repository = "https://github.com/Yatsuiii/api-causality-engine"
 
 [features]
 default = ["schema"]

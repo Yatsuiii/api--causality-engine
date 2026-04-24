@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -e
 
-REPO="Yatsuiii/api--causality-engine"
+REPO="Yatsuiii/api-causality-engine"
 BIN="ace"
 
 # Detect OS and arch
@@ -32,17 +32,29 @@ if [ -z "$TAG" ]; then
   echo "Could not fetch latest release tag" && exit 1
 fi
 
-URL="https://github.com/$REPO/releases/download/$TAG/$TARGET"
+BASE_URL="https://github.com/$REPO/releases/download/$TAG"
 
 echo "Installing ace $TAG for $OS/$ARCH..."
-curl -fsSL "$URL" | tar -xz
-chmod +x "$BIN"
+
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+
+curl -fsSL "$BASE_URL/$TARGET"      -o "$TMPDIR/ace.tar.gz"
+curl -fsSL "$BASE_URL/SHA256SUMS"   -o "$TMPDIR/SHA256SUMS"
+
+# Verify checksum
+cd "$TMPDIR"
+grep "$TARGET" SHA256SUMS | sha256sum -c -
+cd - > /dev/null
+
+tar -xz -C "$TMPDIR" -f "$TMPDIR/ace.tar.gz"
+chmod +x "$TMPDIR/$BIN"
 
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 if [ -w "$INSTALL_DIR" ]; then
-  mv "$BIN" "$INSTALL_DIR/$BIN"
+  mv "$TMPDIR/$BIN" "$INSTALL_DIR/$BIN"
 else
-  sudo mv "$BIN" "$INSTALL_DIR/$BIN"
+  sudo mv "$TMPDIR/$BIN" "$INSTALL_DIR/$BIN"
 fi
 
 echo "ace $TAG installed to $INSTALL_DIR/$BIN"
