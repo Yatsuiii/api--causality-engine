@@ -1,0 +1,63 @@
+name: demos
+
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'examples/**'
+      - 'scripts/check-demo.sh'
+      - '.github/workflows/demos.yml'
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  stripe-drift:
+    name: stripe-drift demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.1
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build ace
+        run: cargo build --release -p cli
+
+      - name: Cache stripe-mock
+        id: cache-stripe-mock
+        uses: actions/cache@v4
+        with:
+          path: /tmp/stripe-mock-bin
+          key: stripe-mock-v0.197.0-linux-amd64
+
+      - name: Install stripe-mock
+        if: steps.cache-stripe-mock.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/stripe-mock-bin
+          curl -sSfL https://github.com/stripe/stripe-mock/releases/download/v0.197.0/stripe-mock_0.197.0_linux_amd64.tar.gz \
+            | tar -xz -C /tmp/stripe-mock-bin
+
+      - name: Run demo
+        run: |
+          ACE=./target/release/ace \
+          STRIPE_MOCK=/tmp/stripe-mock-bin/stripe-mock \
+          bash examples/stripe-drift/run-demo.sh
+
+      - name: Check demo output
+        run: |
+          ACE=./target/release/ace \
+          bash scripts/check-demo.sh examples/stripe-drift/expected.yaml

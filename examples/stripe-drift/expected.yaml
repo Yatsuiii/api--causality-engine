@@ -1,0 +1,22 @@
+runs:
+  staging:
+    log: /tmp/ace-stripe-drift/staging.json
+    terminal_state: done
+    steps_passed: 2
+    steps_failed: 0
+  prod:
+    log: /tmp/ace-stripe-drift/prod.json
+    terminal_state: upgrade_required
+    steps_passed: 0
+    steps_failed: 1
+diff:
+  staging_vs_prod:
+    a: /tmp/ace-stripe-drift/staging.json
+    b: /tmp/ace-stripe-drift/prod.json
+    divergence_count: 2
+    kinds:
+      - step_missing_in_b
+      - routing_diverged
+    required_substrings:
+      - "body.discounts"
+      - "apply_discount"

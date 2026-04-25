@@ -25,17 +25,23 @@ NEW_SHA="${NEW_SHA:-25286160}"
 
 mkdir -p "$CACHE"
 
+VENDORED_OLD="$DIR/specs/spec-old.json"
+VENDORED_NEW="$DIR/specs/spec-new.json"
+
 fetch_spec() {
   local sha=$1
   local dst=$2
-  if [[ ! -s "$dst" ]]; then
+  local vendored=$3
+  if [[ -s "$vendored" ]]; then
+    cp "$vendored" "$dst"
+  elif [[ ! -s "$dst" ]]; then
     echo "▶ fetching Stripe OpenAPI @ $sha"
     curl -sSfL -o "$dst" \
       "https://raw.githubusercontent.com/stripe/openapi/$sha/openapi/spec3.json"
   fi
 }
-fetch_spec "$OLD_SHA" "$CACHE/spec-old.json"
-fetch_spec "$NEW_SHA" "$CACHE/spec-new.json"
+fetch_spec "$OLD_SHA" "$CACHE/spec-old.json" "$VENDORED_OLD"
+fetch_spec "$NEW_SHA" "$CACHE/spec-new.json" "$VENDORED_NEW"
 
 echo "▶ starting stripe-mock instances"
 "$STRIPE_MOCK" -spec "$CACHE/spec-old.json" -http-port "$PORT_OLD" > "$CACHE/sm-old.log" 2>&1 &
@@ -46,8 +52,8 @@ NEW_PID=$!
 cleanup() { kill "$OLD_PID" "$NEW_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
-# stripe-mock takes ~1s to index 450+ endpoints
-sleep 1.5
+# stripe-mock takes 2-3s to index 450+ endpoints
+sleep 3
 
 echo
 echo "════════════════════════════════════════════════════════════════"
