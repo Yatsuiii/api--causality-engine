@@ -1,7 +1,10 @@
 pub mod assertions;
 pub mod graph;
 pub mod jsonpath;
+pub mod mask;
 pub mod redact;
+#[cfg(feature = "schema")]
+pub mod schema;
 pub mod trace;
 pub mod variables;
 

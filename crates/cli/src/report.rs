@@ -161,6 +161,11 @@ mod tests {
                 branch_path: None,
                 request_body: None,
                 response_body: None,
+                response_body_normalized: None,
+                response_headers: None,
+                response_headers_normalized: None,
+                masked_headers: Vec::new(),
+                masked_fields: Vec::new(),
                 edge_evaluations: Vec::new(),
                 failure: None,
             }],
@@ -172,6 +177,8 @@ mod tests {
             terminal_state: Some(state_after.into()),
             seed: 0,
             schema_version: 1,
+            scenario_name: None,
+            scenario_path: None,
         }
     }
 
@@ -195,6 +202,11 @@ mod tests {
                 branch_path: None,
                 request_body: None,
                 response_body: None,
+                response_body_normalized: None,
+                response_headers: None,
+                response_headers_normalized: None,
+                masked_headers: Vec::new(),
+                masked_fields: Vec::new(),
                 edge_evaluations: Vec::new(),
                 failure: None,
             }],
@@ -206,6 +218,8 @@ mod tests {
             terminal_state: None,
             seed: 0,
             schema_version: 1,
+            scenario_name: None,
+            scenario_path: None,
         }
     }
 
@@ -224,6 +238,11 @@ mod tests {
                 branch_path: None,
                 request_body: None,
                 response_body: None,
+                response_body_normalized: None,
+                response_headers: None,
+                response_headers_normalized: None,
+                masked_headers: Vec::new(),
+                masked_fields: Vec::new(),
                 edge_evaluations: vec![EdgeEvaluation {
                     edge_id: String::new(),
                     to: "done".into(),
@@ -243,6 +262,8 @@ mod tests {
             terminal_state: None,
             seed: 0,
             schema_version: 1,
+            scenario_name: None,
+            scenario_path: None,
         }
     }
 
@@ -288,6 +309,11 @@ mod tests {
                 branch_path: None,
                 request_body: None,
                 response_body: None,
+                response_body_normalized: None,
+                response_headers: None,
+                response_headers_normalized: None,
+                masked_headers: Vec::new(),
+                masked_fields: Vec::new(),
                 edge_evaluations: vec![EdgeEvaluation {
                     edge_id: String::new(),
                     to: "waiting".into(),
@@ -304,6 +330,8 @@ mod tests {
             terminal_state: None,
             seed: 0,
             schema_version: 1,
+            scenario_name: None,
+            scenario_path: None,
         };
         assert!(
             result_from_log(&log).is_ok(),
@@ -327,6 +355,11 @@ mod tests {
             branch_path: None,
             request_body: None,
             response_body: None,
+            response_body_normalized: None,
+            response_headers: None,
+            response_headers_normalized: None,
+            masked_headers: Vec::new(),
+            masked_fields: Vec::new(),
             edge_evaluations: Vec::new(),
             failure: None,
         };
@@ -343,6 +376,11 @@ mod tests {
             branch_path: None,
             request_body: None,
             response_body: None,
+            response_body_normalized: None,
+            response_headers: None,
+            response_headers_normalized: None,
+            masked_headers: Vec::new(),
+            masked_fields: Vec::new(),
             edge_evaluations: Vec::new(),
             failure: Some(StepFailure::NoMatch),
         };
@@ -356,6 +394,8 @@ mod tests {
             terminal_state: None,
             seed: 0,
             schema_version: 1,
+            scenario_name: None,
+            scenario_path: None,
         };
         match result_from_log(&log) {
             Err(RunError::NoMatchingTransition { state, status }) => {
@@ -381,6 +421,8 @@ mod tests {
             terminal_state: None,
             seed: 0,
             schema_version: 1,
+            scenario_name: None,
+            scenario_path: None,
         };
         assert_eq!(result_from_log(&log).unwrap(), "unknown");
     }

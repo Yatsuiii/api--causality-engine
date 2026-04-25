@@ -243,8 +243,10 @@ fn eval_schema(
 ) -> AssertionResult {
     let (cache_key, schema_source): (String, String) = match schema_ref {
         SchemaRef::Inline(v) => {
-            let key = format!("inline:{}", v);
-            (key, "<inline>".to_string())
+            // Canonicalize key ordering so two semantically-equal inline schemas
+            // hit the same cache entry regardless of how serde serialized them.
+            let canonical = canonical_json(v);
+            (format!("inline:{}", canonical), "<inline>".to_string())
         }
         SchemaRef::File(path) => {
             let resolved = match base_dir {
@@ -253,6 +255,32 @@ fn eval_schema(
             };
             let display = resolved.display().to_string();
             (format!("file:{}", display), display)
+        }
+        SchemaRef::OpenApi {
+            openapi,
+            component,
+            strict,
+        } => {
+            let resolved = match base_dir {
+                Some(dir) if !std::path::Path::new(openapi).is_absolute() => {
+                    dir.join(openapi).display().to_string()
+                }
+                _ => openapi.clone(),
+            };
+            let source = format!(
+                "{}#/components/schemas/{}{}",
+                resolved,
+                component,
+                if *strict { " (strict)" } else { "" }
+            );
+            // Strict-mode mutates the resolved schema (injects additionalProperties:
+            // false). Two assertions on the same component with different `strict`
+            // values must NOT share a compiled schema — include strictness in key.
+            let mode = if *strict { "strict" } else { "lax" };
+            (
+                format!("openapi:{}:{}:{}", resolved, component, mode),
+                source,
+            )
         }
     };
 
@@ -298,9 +326,20 @@ fn eval_schema(
             actual: "valid".to_string(),
         },
         Err(errors) => {
+            // Reshape each jsonschema error into a high-signal one-liner
+            // (`+ unexpected field: foo`, `- missing required field: bar`,
+            // `~ type mismatch …`). Falls through to the raw text on shapes we
+            // don't recognize so we never lose information. See
+            // `crate::schema::format_validation_error` for the audit.
             let messages: Vec<String> = errors
                 .take(5)
-                .map(|e| format!("{} at {}", e, e.instance_path))
+                .map(|e| {
+                    crate::schema::format_validation_error(
+                        &e.to_string(),
+                        &e.instance_path.to_string(),
+                    )
+                    .render_text()
+                })
                 .collect();
             AssertionResult {
                 description: format!("schema ({})", schema_source),
@@ -317,23 +356,43 @@ fn compile_schema(
     schema_ref: &SchemaRef,
     base_dir: Option<&Path>,
 ) -> Result<Arc<jsonschema::JSONSchema>, String> {
-    let schema_value: serde_json::Value = match schema_ref {
-        SchemaRef::Inline(v) => v.clone(),
-        SchemaRef::File(path) => {
-            let resolved = match base_dir {
-                Some(dir) if !Path::new(path).is_absolute() => dir.join(path),
-                _ => Path::new(path).to_path_buf(),
-            };
-            let contents =
-                std::fs::read_to_string(&resolved).map_err(|e| format!("io error: {}", e))?;
-            serde_json::from_str::<serde_json::Value>(&contents)
-                .or_else(|_| serde_yaml::from_str::<serde_json::Value>(&contents))
-                .map_err(|e| format!("parse error: {}", e))?
-        }
+    let (schema_value, root_doc) =
+        crate::schema::resolve(schema_ref, base_dir).map_err(|e| e.to_string())?;
+    let compiled = match root_doc {
+        // OpenAPI: register the original document under the synthetic URI so
+        // cycle-preserved `$ref`s (rewritten by `inline_refs`) can resolve.
+        Some(root) => jsonschema::JSONSchema::options()
+            .with_document(crate::schema::SYNTHETIC_OPENAPI_ROOT_URI.to_string(), root)
+            .compile(&schema_value),
+        None => jsonschema::JSONSchema::compile(&schema_value),
     };
-    jsonschema::JSONSchema::compile(&schema_value)
+    compiled
         .map(Arc::new)
         .map_err(|e| format!("compile error: {}", e))
+}
+
+/// Stringify a `serde_json::Value` with sorted object keys so two semantically
+/// equal values produce byte-identical output regardless of insertion order.
+/// Used to key the inline-schema cache.
+#[cfg(feature = "schema")]
+fn canonical_json(v: &serde_json::Value) -> String {
+    use std::collections::BTreeMap;
+    fn rebuild(v: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(map) => {
+                let sorted: BTreeMap<&String, serde_json::Value> =
+                    map.iter().map(|(k, v)| (k, rebuild(v))).collect();
+                let out: serde_json::Map<String, serde_json::Value> =
+                    sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect();
+                serde_json::Value::Object(out)
+            }
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(rebuild).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    rebuild(v).to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -739,6 +798,307 @@ mod tests {
         assert!(results[0].passed, "got: {:?}", results[0]);
 
         let _ = std::fs::remove_file(&schema_path);
+        let _ = std::fs::remove_dir(&tmp);
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn openapi_schema_strict_catches_extra_field() {
+        use std::io::Write;
+        // Minimal OpenAPI doc with a Subscription component.
+        let spec = r#"{
+            "openapi": "3.0.0",
+            "components": {
+                "schemas": {
+                    "Subscription": {
+                        "type": "object",
+                        "required": ["id", "status"],
+                        "properties": {
+                            "id":     { "type": "string" },
+                            "status": { "type": "string" }
+                        }
+                    }
+                }
+            }
+        }"#;
+        let tmp = std::env::temp_dir().join(format!(
+            "ace_openapi_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let spec_path = tmp.join("api.json");
+        std::fs::File::create(&spec_path)
+            .unwrap()
+            .write_all(spec.as_bytes())
+            .unwrap();
+
+        let ref_ = SchemaRef::OpenApi {
+            openapi: "api.json".into(),
+            component: "Subscription".into(),
+            strict: true,
+        };
+
+        // Conforming body — should pass.
+        let ok_body = r#"{"id": "sub_123", "status": "active"}"#;
+        let results = evaluate_with_base(
+            &[schema_assertion(ref_.clone())],
+            &make_response(200, ok_body, 10),
+            Some(&tmp),
+        );
+        assert!(results[0].passed, "expected pass, got: {:?}", results[0]);
+
+        // Body with extra field `discounts` — should fail with strict.
+        let drift_body = r#"{"id": "sub_123", "status": "active", "discounts": []}"#;
+        let results = evaluate_with_base(
+            &[schema_assertion(ref_.clone())],
+            &make_response(200, drift_body, 10),
+            Some(&tmp),
+        );
+        assert!(
+            !results[0].passed,
+            "expected fail on extra field, got: {:?}",
+            results[0]
+        );
+        assert!(
+            results[0].actual.contains("discounts"),
+            "error should mention 'discounts', got: {}",
+            results[0].actual
+        );
+
+        // Non-strict — extra field should pass.
+        let ref_lax = SchemaRef::OpenApi {
+            openapi: "api.json".into(),
+            component: "Subscription".into(),
+            strict: false,
+        };
+        let results = evaluate_with_base(
+            &[schema_assertion(ref_lax)],
+            &make_response(200, drift_body, 10),
+            Some(&tmp),
+        );
+        assert!(
+            results[0].passed,
+            "non-strict should pass extra field, got: {:?}",
+            results[0]
+        );
+
+        let _ = std::fs::remove_file(&spec_path);
+        let _ = std::fs::remove_dir(&tmp);
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn openapi_component_not_found_reports_error() {
+        use std::io::Write;
+        let spec = r#"{"openapi": "3.0.0", "components": {"schemas": {}}}"#;
+        let tmp = std::env::temp_dir().join(format!(
+            "ace_openapi_notfound_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let spec_path = tmp.join("api.json");
+        std::fs::File::create(&spec_path)
+            .unwrap()
+            .write_all(spec.as_bytes())
+            .unwrap();
+
+        let ref_ = SchemaRef::OpenApi {
+            openapi: "api.json".into(),
+            component: "Missing".into(),
+            strict: false,
+        };
+        let results = evaluate_with_base(
+            &[schema_assertion(ref_)],
+            &make_response(200, r#"{"id": 1}"#, 10),
+            Some(&tmp),
+        );
+        assert!(!results[0].passed);
+        assert!(
+            results[0].actual.contains("Missing"),
+            "got: {}",
+            results[0].actual
+        );
+
+        let _ = std::fs::remove_file(&spec_path);
+        let _ = std::fs::remove_dir(&tmp);
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn openapi_strict_and_lax_share_no_cache_entry() {
+        // Regression: cache key used to omit `strict`. Asserting the same
+        // component twice — first lax, then strict — could return the lax
+        // schema for the strict assertion, falsely passing extra fields.
+        use std::io::Write;
+        let spec = r#"{
+            "openapi": "3.0.0",
+            "components": {
+                "schemas": {
+                    "Subscription": {
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": { "id": { "type": "string" } }
+                    }
+                }
+            }
+        }"#;
+        let tmp = std::env::temp_dir().join(format!(
+            "ace_openapi_strict_cache_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let spec_path = tmp.join("api.json");
+        std::fs::File::create(&spec_path)
+            .unwrap()
+            .write_all(spec.as_bytes())
+            .unwrap();
+
+        let lax = SchemaRef::OpenApi {
+            openapi: "api.json".into(),
+            component: "Subscription".into(),
+            strict: false,
+        };
+        let strict = SchemaRef::OpenApi {
+            openapi: "api.json".into(),
+            component: "Subscription".into(),
+            strict: true,
+        };
+        // Drift body: extra `discounts` field. Lax must accept; strict must reject.
+        let drift = r#"{"id": "sub_1", "discounts": []}"#;
+
+        // Share a single cache across both assertions to mimic a real scenario run.
+        let cache = SchemaCache::new();
+        let lax_results = evaluate_with_cache(
+            &[schema_assertion(lax)],
+            &make_response(200, drift, 10),
+            Some(&tmp),
+            &cache,
+        );
+        let strict_results = evaluate_with_cache(
+            &[schema_assertion(strict)],
+            &make_response(200, drift, 10),
+            Some(&tmp),
+            &cache,
+        );
+
+        assert!(
+            lax_results[0].passed,
+            "lax should accept extra field; got: {:?}",
+            lax_results[0]
+        );
+        assert!(
+            !strict_results[0].passed,
+            "strict must reject extra field even when lax was compiled first; got: {:?}",
+            strict_results[0]
+        );
+        assert!(
+            strict_results[0].actual.contains("discounts"),
+            "strict failure must mention 'discounts'; got: {}",
+            strict_results[0].actual
+        );
+
+        let _ = std::fs::remove_file(&spec_path);
+        let _ = std::fs::remove_dir(&tmp);
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn inline_schema_cache_canonicalizes_key_order() {
+        // Two semantically identical inline schemas with different key insertion
+        // order must produce identical cache keys (otherwise the cache leaks).
+        let a =
+            serde_json::json!({ "type": "object", "properties": { "id": { "type": "integer" } } });
+        let b_str = r#"{"properties":{"id":{"type":"integer"}},"type":"object"}"#;
+        let b: serde_json::Value = serde_json::from_str(b_str).unwrap();
+        assert_eq!(canonical_json(&a), canonical_json(&b));
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn cyclic_openapi_component_compiles_and_validates_deep_ref() {
+        // End-to-end coverage for the cyclic-$ref fix. A self-referential
+        // `Node` schema must (a) compile without infinite recursion and (b)
+        // actually validate the second-level field, not just the first hop.
+        // Without the synthetic-URI rewrite + with_document() registration,
+        // the preserved `#/components/schemas/Node` would resolve relative to
+        // the extracted standalone Node schema (no `components` section) and
+        // either fail compilation or silently no-op on the nested validation.
+        use std::io::Write;
+        let spec = r##"{
+            "openapi": "3.0.0",
+            "components": {
+                "schemas": {
+                    "Node": {
+                        "type": "object",
+                        "required": ["value"],
+                        "properties": {
+                            "value": { "type": "integer" },
+                            "next":  { "$ref": "#/components/schemas/Node" }
+                        }
+                    }
+                }
+            }
+        }"##;
+        let tmp = std::env::temp_dir().join(format!(
+            "ace_openapi_cyclic_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let spec_path = tmp.join("api.json");
+        std::fs::File::create(&spec_path)
+            .unwrap()
+            .write_all(spec.as_bytes())
+            .unwrap();
+
+        let node = SchemaRef::OpenApi {
+            openapi: "api.json".into(),
+            component: "Node".into(),
+            strict: false,
+        };
+
+        // (a) Valid: nested chain with correct types.
+        let valid_body = r#"{"value": 1, "next": {"value": 2, "next": {"value": 3}}}"#;
+        let valid = evaluate_with_base(
+            &[schema_assertion(node.clone())],
+            &make_response(200, valid_body, 10),
+            Some(&tmp),
+        );
+        // Compile must succeed (Some(root) path) and validation must pass.
+        assert!(
+            valid[0].passed,
+            "valid cyclic body must validate; got {:?}",
+            valid[0]
+        );
+
+        // (b) Invalid at depth 2: `next.value` is a string, not integer.
+        // Catches the case where the deep $ref silently no-ops.
+        let bad_body = r#"{"value": 1, "next": {"value": "not-an-int"}}"#;
+        let cache = SchemaCache::new();
+        let bad = evaluate_with_cache(
+            &[schema_assertion(node)],
+            &make_response(200, bad_body, 10),
+            Some(&tmp),
+            &cache,
+        );
+        assert!(
+            !bad[0].passed,
+            "deep type violation must fail validation; got passing result {:?}",
+            bad[0]
+        );
+
+        let _ = std::fs::remove_file(&spec_path);
         let _ = std::fs::remove_dir(&tmp);
     }
 }

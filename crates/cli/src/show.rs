@@ -25,6 +25,27 @@ pub fn cmd_show(path: &str, deprecated_alias: bool) -> Result<(), CliError> {
         logs.len()
     );
 
+    // P0.4 task 7: name the scenario that produced the log. Three logs in
+    // /tmp/ shouldn't be indistinguishable just because they all came from
+    // `ace run ... --output something.json`. Old logs without scenario
+    // metadata fall through silently — better than rendering "unknown".
+    if let Some(first) = logs.first()
+        && let Some(name) = &first.scenario_name
+    {
+        let path_suffix = first
+            .scenario_path
+            .as_deref()
+            .map(|p| format!(" ({})", p))
+            .unwrap_or_default();
+        println!(
+            "  {} trace from {:?}{}",
+            "ACE show:".bold(),
+            name,
+            path_suffix.dimmed()
+        );
+        println!();
+    }
+
     for (i, log) in logs.iter().enumerate() {
         for step in &log.steps {
             report::print_step_live(i + 1, step, false);

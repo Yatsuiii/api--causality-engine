@@ -112,6 +112,43 @@ pub struct Scenario {
     /// when the built-in key list mislabels a field.
     #[serde(default)]
     pub log: Option<LogConfig>,
+    /// Dynamic-field masking rules. Applied at capture time to produce
+    /// `response_body_normalized` on each StepLog, and used by `ace diff` to
+    /// suppress per-request noise (IDs, timestamps, request headers) so real
+    /// drift is visible.
+    #[serde(default)]
+    pub mask: Vec<MaskRule>,
+}
+
+/// A single masking rule. Either a JSONPath expression that replaces matching
+/// values in the response body, or a header name to replace.
+///
+/// Accepted JSONPath forms:
+///   `$.field`          — top-level key
+///   `$..field`         — recursive descent (all nested keys named `field`)
+///   `$.a.b.c`          — nested path
+///   `$.a[*].field`     — wildcard over array elements
+///
+/// An optional `replacement` string (default `"<MASKED>"`) is substituted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MaskRule {
+    JsonPath {
+        path: String,
+        #[serde(default = "MaskRule::default_replacement")]
+        replacement: String,
+    },
+    Header {
+        header: String,
+        #[serde(default = "MaskRule::default_replacement")]
+        replacement: String,
+    },
+}
+
+impl MaskRule {
+    pub fn default_replacement() -> String {
+        "<MASKED>".to_string()
+    }
 }
 
 /// Per-scenario overrides for what lands in `execution_log.json`.
@@ -540,12 +577,19 @@ pub struct Assertion {
     pub schema: Option<SchemaRef>,
 }
 
-/// Reference to a JSONSchema: inline object or file path.
-/// A bare string is treated as a path; an object is treated as the schema itself.
+/// Reference to a JSONSchema: inline object, file path, or OpenAPI component.
+/// A bare string is treated as a path; an object with `openapi`+`component` keys
+/// resolves from an OpenAPI spec; any other object is treated as an inline schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SchemaRef {
     File(String),
+    OpenApi {
+        openapi: String,
+        component: String,
+        #[serde(default)]
+        strict: bool,
+    },
     Inline(serde_json::Value),
 }
 
@@ -826,6 +870,131 @@ terminal_states:
         match asserts[1].schema.as_ref().unwrap() {
             SchemaRef::Inline(v) => assert!(v.get("properties").is_some()),
             other => panic!("expected inline schema, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_mask_rules() {
+        let yaml = r#"
+name: masking
+initial_state: fetch
+steps:
+  - name: fetch
+    state: fetch
+    method: GET
+    url: https://example.com
+edges:
+  - from: fetch
+    to: done
+    default: true
+mask:
+  - path: "$.id"
+  - path: "$..created"
+    replacement: "<TS>"
+  - header: "x-request-id"
+  - header: "date"
+    replacement: "<DATE>"
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        assert_eq!(scenario.mask.len(), 4);
+        match &scenario.mask[0] {
+            MaskRule::JsonPath { path, replacement } => {
+                assert_eq!(path, "$.id");
+                assert_eq!(replacement, "<MASKED>");
+            }
+            other => panic!("expected JsonPath, got {:?}", other),
+        }
+        match &scenario.mask[1] {
+            MaskRule::JsonPath { path, replacement } => {
+                assert_eq!(path, "$..created");
+                assert_eq!(replacement, "<TS>");
+            }
+            other => panic!("expected JsonPath, got {:?}", other),
+        }
+        match &scenario.mask[2] {
+            MaskRule::Header {
+                header,
+                replacement,
+            } => {
+                assert_eq!(header, "x-request-id");
+                assert_eq!(replacement, "<MASKED>");
+            }
+            other => panic!("expected Header, got {:?}", other),
+        }
+        match &scenario.mask[3] {
+            MaskRule::Header {
+                header,
+                replacement,
+            } => {
+                assert_eq!(header, "date");
+                assert_eq!(replacement, "<DATE>");
+            }
+            other => panic!("expected Header, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scenario_without_mask_block_has_empty_vec() {
+        let yaml = r#"
+name: no-mask
+initial_state: fetch
+steps:
+  - name: fetch
+    state: fetch
+    method: GET
+    url: https://example.com
+edges:
+  - from: fetch
+    to: done
+    default: true
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        assert!(scenario.mask.is_empty());
+    }
+
+    #[test]
+    fn parse_schema_assertion_openapi() {
+        let yaml = r#"
+name: openapi-schema
+initial_state: fetch
+steps:
+  - name: fetch
+    state: fetch
+    method: GET
+    url: https://example.com
+    assert:
+      - schema:
+          openapi: ./stripe.json
+          component: Subscription
+          strict: true
+      - schema:
+          openapi: ./api.yaml
+          component: User
+edges:
+  - from: fetch
+    to: done
+    default: true
+terminal_states:
+  - done
+"#;
+        let scenario = load_scenario(yaml).unwrap();
+        let asserts = scenario.steps[0].assertions.as_ref().unwrap();
+        assert_eq!(asserts.len(), 2);
+        match asserts[0].schema.as_ref().unwrap() {
+            SchemaRef::OpenApi {
+                openapi,
+                component,
+                strict,
+            } => {
+                assert_eq!(openapi, "./stripe.json");
+                assert_eq!(component, "Subscription");
+                assert!(*strict);
+            }
+            other => panic!("expected OpenApi ref, got {:?}", other),
+        }
+        match asserts[1].schema.as_ref().unwrap() {
+            SchemaRef::OpenApi { strict, .. } => assert!(!strict),
+            other => panic!("expected OpenApi ref, got {:?}", other),
         }
     }
 }

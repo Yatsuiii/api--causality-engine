@@ -134,6 +134,11 @@ mod tests {
                 branch_path: None,
                 request_body: None,
                 response_body: None,
+                response_body_normalized: None,
+                response_headers: None,
+                response_headers_normalized: None,
+                masked_headers: Vec::new(),
+                masked_fields: Vec::new(),
                 edge_evaluations: vec![EdgeEvaluation {
                     edge_id: String::new(),
                     to: "done".into(),
@@ -153,6 +158,8 @@ mod tests {
             terminal_state: None,
             seed: 0,
             schema_version: 1,
+            scenario_name: None,
+            scenario_path: None,
         }
     }
 

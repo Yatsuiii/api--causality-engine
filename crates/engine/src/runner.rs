@@ -5,6 +5,7 @@ use crate::edges::{EdgeKey, default_edge_target, evaluate_edges};
 use crate::graph::Graph;
 use crate::http::execute_step;
 use crate::log::{ExecutionLog, StepFailure, StepLog};
+use crate::mask;
 use crate::redact::Redactor;
 use crate::trace::{EdgeEvaluation, EdgeOutcome};
 use crate::variables::{self, Context};
@@ -27,10 +28,46 @@ struct StepLogBuilder<'a> {
     edge_evaluations: Vec<crate::trace::EdgeEvaluation>,
     verbose: bool,
     failure: Option<StepFailure>,
+    mask_rules: Vec<model::MaskRule>,
 }
 
 impl<'a> StepLogBuilder<'a> {
     fn build(self) -> StepLog {
+        let body_masking = !self.mask_rules.is_empty();
+        let header_masking = mask::has_header_rules(&self.mask_rules);
+
+        let (response_body_normalized, masked_fields) = if body_masking {
+            match mask::normalize_body_tracked(&self.result.response.body, &self.mask_rules) {
+                Some((v, matched)) => (Some(v), matched),
+                None => (None, Vec::new()),
+            }
+        } else {
+            (None, Vec::new())
+        };
+
+        // Retain raw response body whenever masking is active (even non-verbose),
+        // so a future `ace diff --show-masked` can show pre-mask values without
+        // a re-run.
+        let response_body = if self.verbose || body_masking {
+            Some(self.result.response.body.clone())
+        } else {
+            None
+        };
+
+        let (response_headers, response_headers_normalized, masked_headers) = if header_masking {
+            let (norm, matched) =
+                mask::normalize_headers_tracked(&self.result.response.headers, &self.mask_rules);
+            (
+                Some(self.result.response.headers.clone()),
+                Some(norm),
+                matched,
+            )
+        } else if self.verbose {
+            (Some(self.result.response.headers.clone()), None, Vec::new())
+        } else {
+            (None, None, Vec::new())
+        };
+
         StepLog {
             step_name: self.step_name,
             state_before: self.state_before,
@@ -47,11 +84,12 @@ impl<'a> StepLogBuilder<'a> {
             } else {
                 None
             },
-            response_body: if self.verbose {
-                Some(self.result.response.body.clone())
-            } else {
-                None
-            },
+            response_body,
+            response_body_normalized,
+            masked_fields,
+            response_headers,
+            response_headers_normalized,
+            masked_headers,
             edge_evaluations: self.edge_evaluations,
             failure: self.failure,
         }
@@ -80,6 +118,11 @@ fn skipped_step_log(
         branch_path,
         request_body: None,
         response_body: None,
+        response_body_normalized: None,
+        masked_fields: Vec::new(),
+        response_headers: None,
+        response_headers_normalized: None,
+        masked_headers: Vec::new(),
         edge_evaluations: vec![EdgeEvaluation {
             edge_id: String::new(),
             to: state_after,
@@ -131,7 +174,11 @@ async fn run_once(
     let mut context =
         variables::build_initial_context(scenario.variables.as_ref(), &config.cli_variables);
 
-    let mut log = ExecutionLog::default();
+    let mut log = ExecutionLog {
+        scenario_name: Some(scenario.name.clone()),
+        scenario_path: config.scenario_path.clone(),
+        ..ExecutionLog::default()
+    };
 
     if let Some(auth) = &scenario.auth
         && let Some(oauth) = &auth.oauth2
@@ -250,6 +297,7 @@ async fn run_once(
                             edge_evaluations: decision.evaluations,
                             verbose: config.verbose,
                             failure: Some(failure),
+                            mask_rules: scenario.mask.clone(),
                         }
                         .build();
                         apply_redaction(&mut synth, &redactor);
@@ -287,6 +335,7 @@ async fn run_once(
                         edge_evaluations: evaluations,
                         verbose: config.verbose,
                         failure: None,
+                        mask_rules: scenario.mask.clone(),
                     }
                     .build();
                     apply_redaction(&mut dispatch_step, &redactor);
@@ -351,6 +400,7 @@ async fn run_once(
                     edge_evaluations: evaluations,
                     verbose: config.verbose,
                     failure: None,
+                    mask_rules: scenario.mask.clone(),
                 }
                 .build();
                 apply_redaction(&mut main_step, &redactor);
@@ -629,6 +679,7 @@ async fn run_branch(
                             edge_evaluations: decision.evaluations,
                             verbose: config.verbose,
                             failure: Some(failure),
+                            mask_rules: scenario.mask.clone(),
                         }
                         .build();
                         apply_redaction(&mut synth, redactor);
@@ -686,6 +737,7 @@ async fn run_branch(
                     edge_evaluations: evaluations,
                     verbose: config.verbose,
                     failure: None,
+                    mask_rules: scenario.mask.clone(),
                 }
                 .build();
                 apply_redaction(&mut branch_step, redactor);

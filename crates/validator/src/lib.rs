@@ -1,4 +1,4 @@
-use model::{Edge, Scenario, StatusMatch};
+use model::{Edge, MaskRule, Scenario, StatusMatch};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 // ── Public diagnostic types ───────────────────────────────────────────────
@@ -441,6 +441,7 @@ pub fn validate_scenario(scenario: &Scenario, index: &LineIndex) -> Vec<Diagnost
     }
 
     issues.extend(validate_variable_references(scenario, index));
+    issues.extend(validate_mask_rules(scenario));
 
     let effective_terminals = declared_terminals.clone();
 
@@ -823,6 +824,85 @@ fn validate_variable_references(scenario: &Scenario, index: &LineIndex) -> Vec<D
     }
 
     issues
+}
+
+/// E021: every `JsonPath` mask rule must use a syntax actually supported by
+/// `engine::mask`. The mask parser silently does nothing on unsupported
+/// patterns (e.g. `$.items[0].id`), so a typo turns into "no drift detected".
+/// Reject at load time with a pointer to the supported subset.
+fn validate_mask_rules(scenario: &Scenario) -> Vec<Diagnostic> {
+    let mut issues = Vec::new();
+    for (idx, rule) in scenario.mask.iter().enumerate() {
+        if let MaskRule::JsonPath { path, .. } = rule
+            && let Err(reason) = is_supported_jsonpath(path)
+        {
+            issues.push(Diagnostic::error(
+                "E021",
+                format!(
+                    "mask[{idx}] path '{path}' uses unsupported JSONPath syntax: {reason}. \
+                     Supported: $.foo, $..foo, $.foo.bar, $.foo[*].bar (no [N], no filters)",
+                ),
+                None,
+            ));
+        }
+    }
+    issues
+}
+
+/// Mirror of `engine::mask` parser limits. Returns `Err` with a short reason
+/// when the path uses syntax the parser silently ignores.
+fn is_supported_jsonpath(path: &str) -> Result<(), String> {
+    let rest = path
+        .strip_prefix('$')
+        .ok_or_else(|| "must start with '$'".to_string())?;
+    if rest.is_empty() {
+        return Err("path is bare '$' — must select at least one key".to_string());
+    }
+    if let Some(key) = rest.strip_prefix("..") {
+        if key.is_empty() {
+            return Err("'$..' must be followed by a key name".to_string());
+        }
+        if key.contains('[') || key.contains('.') {
+            return Err(
+                "'$..key' supports only a single bare key (no further segments)".to_string(),
+            );
+        }
+        return Ok(());
+    }
+    let rest = rest
+        .strip_prefix('.')
+        .ok_or_else(|| "second char after '$' must be '.' or '..'".to_string())?;
+    // The engine parser collapses consecutive dots (`split('.')` skips empties),
+    // so `$.a..b` silently behaves as `$.a.b` — almost certainly not what the
+    // user meant by writing `..`. Reject consecutive dots outside the leading
+    // `$..` form as a single bare key.
+    if rest.contains("..") {
+        return Err(
+            "use '$..key' for recursive descent on a single bare key (no further segments)"
+                .to_string(),
+        );
+    }
+    for part in rest.split('.') {
+        if part.is_empty() {
+            continue;
+        }
+        // The only bracket form the parser accepts is `[*]`.
+        let mut remaining = part;
+        while let Some(open) = remaining.find('[') {
+            let key_part = &remaining[..open];
+            if key_part.is_empty() && remaining != part {
+                return Err(format!("empty segment near '{part}'"));
+            }
+            let after = &remaining[open..];
+            if let Some(rest_after) = after.strip_prefix("[*]") {
+                remaining = rest_after;
+            } else {
+                let close = after.find(']').map(|i| &after[..=i]).unwrap_or(after);
+                return Err(format!("only '[*]' brackets are supported (saw '{close}')"));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1791,6 +1871,90 @@ edges:
             !issues.iter().any(|d| d.code == "E009"),
             "priority should suppress E009; got: {:?}",
             issues.iter().map(|d| d.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn supported_jsonpath_accepts_subset() {
+        for path in &[
+            "$.id",
+            "$..id",
+            "$.foo.bar",
+            "$.data[*].id",
+            "$.deeply.nested.path",
+            "$.items[*].nested[*].id",
+        ] {
+            assert!(is_supported_jsonpath(path).is_ok(), "should accept: {path}");
+        }
+    }
+
+    #[test]
+    fn supported_jsonpath_rejects_unsupported() {
+        for (path, hint) in &[
+            ("foo.bar", "must start"),
+            ("$", "bare"),
+            ("$..", "followed"),
+            ("$.items[0].id", "[*]"),
+            ("$.a..b", "single bare key"),
+        ] {
+            let err = is_supported_jsonpath(path).unwrap_err();
+            assert!(
+                err.contains(hint),
+                "rejecting '{path}' should mention '{hint}'; got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validator_rejects_unsupported_jsonpath_in_mask() {
+        let yaml = r#"
+name: bad-mask
+initial_state: start
+terminal_states: [done]
+mask:
+  - path: "$.items[0].id"
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+edges:
+  - from: start
+    to: done
+    default: true
+"#;
+        let issues = validate(yaml);
+        let e021: Vec<_> = issues.iter().filter(|d| d.code == "E021").collect();
+        assert_eq!(e021.len(), 1, "got: {:?}", issues);
+        assert!(e021[0].message.contains("[*]"));
+    }
+
+    #[test]
+    fn validator_accepts_supported_jsonpath_in_mask() {
+        let yaml = r#"
+name: good-mask
+initial_state: start
+terminal_states: [done]
+mask:
+  - path: "$.id"
+  - path: "$..created"
+  - path: "$.data[*].id"
+  - header: "x-request-id"
+steps:
+  - name: start
+    state: start
+    method: GET
+    url: http://example.com
+edges:
+  - from: start
+    to: done
+    default: true
+"#;
+        let issues = validate(yaml);
+        assert!(
+            !issues.iter().any(|d| d.code == "E021"),
+            "valid mask should produce no E021; got: {:?}",
+            issues
         );
     }
 }

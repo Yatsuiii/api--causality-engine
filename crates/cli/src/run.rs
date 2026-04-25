@@ -1,4 +1,5 @@
 use crate::error::{CliError, print_diagnostics, read_file};
+use crate::glyph;
 use crate::report;
 use colored::Colorize;
 use engine::RunConfig;
@@ -121,6 +122,7 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
         scenario_dir: std::path::Path::new(&args.scenario)
             .parent()
             .map(|p| p.to_path_buf()),
+        scenario_path: Some(args.scenario.clone()),
     };
 
     let results = engine::run(&scenario, &config).await;
@@ -165,6 +167,31 @@ pub async fn cmd_run(args: RunArgs) -> Result<(), CliError> {
             println!("  {} {}", "JUnit:".dimmed(), junit_path);
         }
     }
+
+    let total_steps: usize = results.iter().map(|(log, _)| log.total_steps).sum();
+    let total_passed: usize = results.iter().map(|(log, _)| log.passed).sum();
+    let total_failed: usize = results.iter().map(|(log, _)| log.failed).sum();
+    let verdict = if has_engine_errors {
+        "ERROR"
+    } else if has_assertion_failures {
+        "FAIL"
+    } else {
+        "PASS"
+    };
+    let summary_payload = serde_json::json!({
+        "v": glyph::SUMMARY_SCHEMA_VERSION,
+        "command": "run",
+        "verdict": verdict,
+        "total_steps": total_steps,
+        "passed": total_passed,
+        "failed": total_failed,
+        "scenario": scenario.name,
+    });
+    println!(
+        "{}{}",
+        glyph::SUMMARY_PREFIX,
+        serde_json::to_string(&summary_payload).expect("summary payload serializes")
+    );
 
     if has_engine_errors {
         return Err(CliError::RunError);

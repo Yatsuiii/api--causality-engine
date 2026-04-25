@@ -6,6 +6,9 @@ on:
       - 'crates/**'
       - 'examples/**'
       - 'scripts/check-demo.sh'
+      - 'scripts/check-demo.test.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/demos.yml'
   push:
     branches: [main]
@@ -35,7 +38,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Build ace
-        run: cargo build --release -p cli
+        run: cargo build --release -p ace
+
+      - name: Self-test the demo checker
+        run: bash scripts/check-demo.test.sh
 
       - name: Cache stripe-mock
         id: cache-stripe-mock
@@ -60,4 +66,5 @@ jobs:
       - name: Check demo output
         run: |
           ACE=./target/release/ace \
+          CACHE=/tmp/ace-stripe-drift \
           bash scripts/check-demo.sh examples/stripe-drift/expected.yaml

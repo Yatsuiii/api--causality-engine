@@ -248,19 +248,19 @@ fn render_edge_evaluation(eval: &EdgeEvaluation, step_failed: bool) -> String {
         ),
         EdgeOutcome::LostPriority { winner_priority } => format!(
             "{} {}  [{}]",
-            "⋯".dimmed(),
+            "·".dimmed(),
             target.dimmed(),
             format!("lost priority, winner={}", winner_priority).dimmed()
         ),
         EdgeOutcome::LostWeightedRoll { weight, total } => format!(
             "{} {}  [{}]",
-            "⋯".dimmed(),
+            "·".dimmed(),
             target.dimmed(),
             format!("lost weighted roll {}/{}", weight, total).dimmed()
         ),
         EdgeOutcome::LostTieBreak { winner_index } => format!(
             "{} {}  [{}]",
-            "⋯".dimmed(),
+            "·".dimmed(),
             target.dimmed(),
             format!(
                 "unweighted tie, edge[{}] won — add weight: or reorder",

@@ -1,6 +1,7 @@
 mod diff;
 mod docs;
 mod error;
+mod glyph;
 mod import;
 mod init;
 mod junit;
@@ -41,7 +42,11 @@ impl RedactMode {
     long_about = "A CLI for defining, executing, and validating stateful API \
                    workflows from YAML scenarios. Supports headers, request bodies, \
                    assertions, auth, concurrency, retry logic, variable substitution, \
-                   and deterministic weighted routing via --seed."
+                   and deterministic weighted routing via --seed.",
+    after_help = "EXIT CODES:\n  \
+        0   no diff (diff) | passed (run)\n  \
+        1   diff found (diff) | assertion failed (run)\n  \
+        2   error (file not found, network, bad scenario, engine failure)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -191,13 +196,29 @@ enum Commands {
         /// Path to trace B (e.g. prod.json)
         trace_b: String,
 
-        /// Output format: text or json
+        /// Output format: text, markdown, or json
         #[arg(long, default_value = "text")]
         format: String,
 
         /// Write output to file instead of stdout
         #[arg(short, long)]
         output: Option<String>,
+
+        /// Extra mask rules YAML (same format as scenario `mask:` block).
+        /// Useful when diffing traces you did not produce yourself.
+        #[arg(long)]
+        mask_extra: Option<String>,
+
+        /// Expand each `· masked: …` line with the pre-mask values from
+        /// both traces. Requires raw `response_body` to have been retained
+        /// (automatic when scenario `mask:` is non-empty).
+        #[arg(long)]
+        show_masked: bool,
+
+        /// Suppress all output except the `ACE_SUMMARY: …` line. Useful for
+        /// CI scripts that only want the verdict JSON.
+        #[arg(short, long)]
+        quiet: bool,
     },
 }
 
@@ -266,7 +287,18 @@ async fn main() {
             trace_b,
             format,
             output,
-        } => diff::cmd_diff(&trace_a, &trace_b, &format, output),
+            mask_extra,
+            show_masked,
+            quiet,
+        } => diff::cmd_diff(diff::DiffArgs {
+            a: trace_a,
+            b: trace_b,
+            format,
+            output,
+            mask_extra,
+            show_masked,
+            quiet,
+        }),
     };
 
     if let Err(e) = result {

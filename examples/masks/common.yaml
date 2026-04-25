@@ -1,0 +1,34 @@
+# Common mask rules for noisy dynamic fields (IDs, timestamps, request IDs).
+# Path syntax: $.foo, $..foo, $.foo.bar, $.foo[*].bar.
+# Not supported: $.foo[0], $..foo[?...], $.*.bar — validator rejects these.
+mask:
+  # Generic ID fields
+  - path: "$.id"
+  - path: "$..id"
+
+  # Timestamps (Unix epoch and ISO strings)
+  - path: "$..created"
+  - path: "$..updated"
+  - path: "$..created_at"
+  - path: "$..updated_at"
+  - path: "$..timestamp"
+  - path: "$..expires_at"
+  - path: "$..current_period_end"
+  - path: "$..current_period_start"
+
+  # ETags and cache tokens
+  - path: "$..etag"
+
+  # Rate-limit state (varies per request)
+  - path: "$..livemode"
+
+  # Standard per-request headers
+  - header: "x-request-id"
+  - header: "x-stripe-request-id"
+  - header: "x-amzn-requestid"
+  - header: "x-amz-request-id"
+  - header: "x-trace-id"
+  - header: "x-runtime"
+  - header: "date"
+  - header: "age"
+  - header: "etag"

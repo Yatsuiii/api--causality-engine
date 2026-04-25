@@ -127,6 +127,10 @@ pub struct RunConfig {
     /// against — typically the scenario file's parent. Unset means resolve
     /// against the CWD.
     pub scenario_dir: Option<std::path::PathBuf>,
+    /// Path to the scenario YAML, recorded into `ExecutionLog.scenario_path`
+    /// so `ace show` can name the source. The CLI populates this; embed
+    /// callers may leave it `None`.
+    pub scenario_path: Option<String>,
 }
 
 impl Default for RunConfig {
@@ -141,6 +145,7 @@ impl Default for RunConfig {
             seed: None,
             redact: true,
             scenario_dir: None,
+            scenario_path: None,
         }
     }
 }

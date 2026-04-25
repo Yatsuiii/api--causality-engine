@@ -16,12 +16,13 @@ steps:
       Authorization: "Bearer {{api_key}}"
     assert:
       - status: 200
-      # Client written against Stripe API 2022-11-15: the `discounts` array field
-      # did not exist then (only a singular `discount` object did). When the backend
-      # upgrades to the 2026-04-22 spec, Stripe adds `discounts` to every subscription
-      # response — breaking this guard and flagging the divergence.
-      - body:
-          discounts: { exists: false }
+      # Assert the full response shape against the spec the client was written
+      # against. strict: true catches extra fields (like `discounts` added in the
+      # 2026-04-22 spec) without any per-field prediction.
+      - schema:
+          openapi: ./specs/spec-old.json
+          component: subscription
+          strict: true
 
   - name: apply_discount
     state: apply_discount

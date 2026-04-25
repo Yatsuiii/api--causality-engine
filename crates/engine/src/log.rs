@@ -58,6 +58,17 @@ pub struct ExecutionLog {
     /// can be reproduced by passing `--seed <value>` (with matching concurrency).
     #[serde(default)]
     pub seed: u64,
+    /// Human-readable scenario name from `name:` in the YAML. Lets `ace show`
+    /// answer "which scenario produced this log?" without forcing the reader
+    /// to cross-reference filenames. Old logs deserialize fine via serde
+    /// default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario_name: Option<String>,
+    /// Path to the scenario file (relative or absolute) that produced this
+    /// log, recorded at run time. Pairs with `scenario_name` so `ace show`
+    /// can render "trace from \"X\" (path/to/scenario.yaml)".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario_path: Option<String>,
 }
 
 impl Default for ExecutionLog {
@@ -72,6 +83,8 @@ impl Default for ExecutionLog {
             iterations: 0,
             terminal_state: None,
             seed: 0,
+            scenario_name: None,
+            scenario_path: None,
         }
     }
 }
@@ -98,6 +111,30 @@ pub struct StepLog {
     pub request_body: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_body: Option<String>,
+    /// JSON-parsed response body with `mask:` rules applied. Present when the
+    /// scenario defines at least one mask rule. Used by `ace diff` (P1.5+) to
+    /// compare body content without per-request noise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_body_normalized: Option<serde_json::Value>,
+    /// JSONPath patterns from `mask:` rules that matched at least one node in
+    /// this response. Used by `ace diff` to show "masked: x, y" in output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub masked_fields: Vec<String>,
+    /// Raw response headers. Populated only when the scenario defines at least
+    /// one Header mask rule (so a future `--show-masked` can show pre-mask
+    /// values) or when verbose mode was on. Always absent on non-verbose runs
+    /// without header masking, so traces stay small.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_headers: Option<std::collections::HashMap<String, String>>,
+    /// Response headers with `mask:` rules applied. Same trigger as
+    /// `response_headers`. Used by `ace diff` to compare header values without
+    /// per-request noise (request IDs, timestamps, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_headers_normalized: Option<std::collections::HashMap<String, String>>,
+    /// Header names from `mask:` rules that matched at least one header in
+    /// this response. Used by `ace diff` to show "masked headers: x, y".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub masked_headers: Vec<String>,
     /// Per-edge causality trace. Each entry says whether an outgoing edge
     /// matched, lost by priority/weight, or was rejected (and why). Empty
     /// on terminal/skipped steps. Old logs deserialize fine (serde default).

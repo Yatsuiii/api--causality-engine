@@ -1,22 +1,28 @@
+# Run/diff outcomes the demo is expected to produce. `log`, `a`, `b` paths
+# are relative to $CACHE (env var passed to scripts/check-demo.sh, defaults
+# to /tmp/ace-stripe-drift — the same default run-demo.sh uses).
 runs:
   staging:
-    log: /tmp/ace-stripe-drift/staging.json
+    log: staging.json
     terminal_state: done
     steps_passed: 2
     steps_failed: 0
   prod:
-    log: /tmp/ace-stripe-drift/prod.json
+    log: prod.json
     terminal_state: upgrade_required
     steps_passed: 0
     steps_failed: 1
 diff:
   staging_vs_prod:
-    a: /tmp/ace-stripe-drift/staging.json
-    b: /tmp/ace-stripe-drift/prod.json
+    a: staging.json
+    b: prod.json
     divergence_count: 2
     kinds:
       - step_missing_in_b
       - routing_diverged
     required_substrings:
-      - "body.discounts"
+      # P0.4: schema-strict failures now render as "+ unexpected field: <name>"
+      # instead of jsonschema's stock English. The substring stays specific
+      # enough to catch the regression that drove the original demo.
+      - "unexpected field: discounts"
       - "apply_discount"
