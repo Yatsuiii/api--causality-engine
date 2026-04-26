@@ -165,7 +165,7 @@ async fn run_once(
     let client_config = ClientConfig {
         insecure: config.insecure || scenario.insecure.unwrap_or(false),
         proxy: config.proxy.clone().or_else(|| scenario.proxy.clone()),
-        default_timeout_ms: scenario.default_timeout_ms,
+        default_timeout_ms: scenario.default_timeout_ms.or(Some(30_000)),
     };
     let client = build_client(&client_config);
     let redactor = build_redactor(config, scenario);
