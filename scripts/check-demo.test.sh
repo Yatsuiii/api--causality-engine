@@ -22,22 +22,24 @@ trap 'rm -rf "$ROOT"' EXIT
 mkdir -p "$ROOT/bin"
 cat > "$ROOT/bin/ace" <<'STUB'
 #!/usr/bin/env bash
-# Minimal ace stub. Supports: ace diff <a> <b> [--format json]
+# Minimal ace stub. Supports: ace diff <a> <b> [--format json] [--output file] [--quiet]
 set -euo pipefail
 [[ "${1:-}" == "diff" ]] || { echo "stub only supports 'diff'" >&2; exit 2; }
-A=$2; B=$3; FMT=text
+A=$2; B=$3; FMT=text; OUT=""; QUIET=0
 shift 3
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --format) FMT=$2; shift 2 ;;
+    --output) OUT=$2; shift 2 ;;
+    --quiet)  QUIET=1; shift ;;
     *) shift ;;
   esac
 done
-python3 - "$A" "$B" "$FMT" <<'PY'
+python3 - "$A" "$B" "$FMT" "$OUT" "$QUIET" <<'PY'
 import sys, json
 with open(sys.argv[1]) as f: a = json.load(f)[0]
 with open(sys.argv[2]) as f: b = json.load(f)[0]
-fmt = sys.argv[3]
+fmt = sys.argv[3]; out = sys.argv[4]; quiet = sys.argv[5] == "1"
 divs = []
 if a.get("terminal_state") != b.get("terminal_state"):
     divs.append({
@@ -49,18 +51,24 @@ if a.get("terminal_state") != b.get("terminal_state"):
         "kind": {"kind": "step_missing_in_b"},
     })
 if fmt == "json":
-    print(json.dumps({
+    payload = json.dumps({
         "divergences": divs,
         "summary": {"total_steps": 2, "divergences": len(divs)},
-    }))
-else:
-    if not divs:
-        print("no divergences across 2 step(s).")
+    })
+    if out:
+        with open(out, "w") as f: f.write(payload + "\n")
     else:
-        for d in divs:
-            print(f"User 1 / step \"{d['step']}\"")
-            print(f"  routing diverged — body.discounts now present")
-        print(f"{len(divs)} divergence(s) across 2 step(s).")
+        print(payload)
+else:
+    if not quiet:
+        if not divs:
+            print("no divergences across 2 step(s).")
+        else:
+            for d in divs:
+                print(f"User 1 / step \"{d['step']}\"")
+                print(f"  routing diverged — body.discounts now present")
+            print(f"{len(divs)} divergence(s) across 2 step(s).")
+print("ACE_SUMMARY: {}")
 PY
 STUB
 chmod +x "$ROOT/bin/ace"
