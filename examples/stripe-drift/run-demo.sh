@@ -52,8 +52,20 @@ NEW_PID=$!
 cleanup() { kill "$OLD_PID" "$NEW_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
-# stripe-mock takes 2-3s to index 450+ endpoints
-sleep 3
+# Wait for both stripe-mock instances to be ready (large specs can take >10s to index).
+wait_for_port() {
+  local port=$1 label=$2 deadline=$(( $(date +%s) + 60 ))
+  echo -n "▶ waiting for $label on :$port ..."
+  until curl -sf "http://localhost:$port/v1/customers" -H "Authorization: Bearer sk_test_x" -o /dev/null 2>/dev/null; do
+    if (( $(date +%s) > deadline )); then
+      echo " timed out"; exit 1
+    fi
+    sleep 1; echo -n "."
+  done
+  echo " ready"
+}
+wait_for_port "$PORT_OLD" "stripe-mock (old spec)"
+wait_for_port "$PORT_NEW" "stripe-mock (new spec)"
 
 echo
 echo "════════════════════════════════════════════════════════════════"
