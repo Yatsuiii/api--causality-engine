@@ -61,13 +61,23 @@ pub fn resolve(
             strict,
         } => {
             let mut doc = load_json_or_yaml(base_dir, openapi)?;
+            // Normalize OpenAPI 3.0 `nullable: true` → JSON Schema null type on
+            // every component schema so the jsonschema crate accepts null values.
+            if let Some(Value::Object(schemas)) = doc.pointer_mut("/components/schemas") {
+                for v in schemas.values_mut() {
+                    normalize_nullable(v);
+                }
+            }
             if *strict {
                 // Inject additionalProperties:false into every component schema
                 // in the root doc so it takes effect wherever refs resolve.
-                // Mutating the doc here is safe — we loaded a fresh copy.
+                // Also strip `required` arrays: strict mode catches EXTRA fields
+                // (schema drift), not missing ones. Server mocks often omit
+                // required fields; failing on those is noise not signal.
                 if let Some(Value::Object(schemas)) = doc.pointer_mut("/components/schemas") {
                     for v in schemas.values_mut() {
                         apply_strict(v);
+                        strip_required(v);
                     }
                 }
             }
@@ -108,6 +118,57 @@ fn rewrite_refs(schema: Value) -> Value {
         }
         Value::Array(arr) => Value::Array(arr.into_iter().map(rewrite_refs).collect()),
         other => other,
+    }
+}
+
+/// Convert OpenAPI 3.0 `nullable: true` to JSON Schema null-union in place.
+/// OpenAPI uses `nullable: true` as a sibling to `type`/`$ref`/`anyOf`; JSON
+/// Schema has no such keyword. Three patterns handled:
+///   - `{anyOf: [...], nullable: true}` → append `{type: null}` to anyOf
+///   - `{type: "T", nullable: true}`    → `type: ["T", "null"]`
+///   - `{$ref: "...", nullable: true}`  → `{anyOf: [{$ref: "..."}, {type: "null"}]}`
+fn normalize_nullable(schema: &mut Value) {
+    let Value::Object(map) = schema else { return };
+
+    // Recurse first so children are already normalized.
+    for val in map.values_mut() {
+        normalize_nullable(val);
+    }
+
+    if !matches!(map.get("nullable"), Some(Value::Bool(true))) {
+        return;
+    }
+    map.remove("nullable");
+
+    if let Some(Value::Array(any_of)) = map.get_mut("anyOf") {
+        any_of.push(serde_json::json!({"type": "null"}));
+    } else if let Some(ref_val) = map.remove("$ref") {
+        let branches = vec![
+            serde_json::json!({"$ref": ref_val}),
+            serde_json::json!({"type": "null"}),
+        ];
+        map.insert("anyOf".to_string(), Value::Array(branches));
+    } else {
+        // enum + nullable: add null to enum so null passes validation.
+        if let Some(Value::Array(enum_vals)) = map.get_mut("enum") {
+            if !enum_vals.contains(&Value::Null) {
+                enum_vals.push(Value::Null);
+            }
+        }
+        // type + nullable: widen scalar type to accept null.
+        if let Some(Value::String(t)) = map.get("type").cloned() {
+            map.insert("type".to_string(), serde_json::json!([t, "null"]));
+        }
+    }
+    // If nothing matched, leave as-is (validator will decide).
+}
+
+/// Recursively remove all `required` arrays from a schema tree.
+fn strip_required(schema: &mut Value) {
+    let Value::Object(map) = schema else { return };
+    map.remove("required");
+    for val in map.values_mut() {
+        strip_required(val);
     }
 }
 
@@ -242,10 +303,42 @@ pub fn format_validation_error(raw: &str, instance_path: &str) -> SchemaErrorSha
     };
 
     // "Additional properties are not allowed ('discounts' was unexpected)"
-    if raw.contains("Additional properties are not allowed")
-        && let Some(field) = extract_quoted(raw, "'", "' was unexpected")
-    {
-        return SchemaErrorShape::UnexpectedField { field, path };
+    // "Additional properties are not allowed ('a', 'b' were unexpected)"
+    if raw.contains("Additional properties are not allowed") {
+        // Extract all single-quoted field names from the message.
+        let fields: Vec<String> = raw
+            .split('\'')
+            .enumerate()
+            .filter_map(|(i, s)| {
+                if i % 2 == 1 && !s.is_empty() {
+                    Some(s.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if let Some(first) = fields.first() {
+            if fields.len() == 1 {
+                return SchemaErrorShape::UnexpectedField {
+                    field: first.clone(),
+                    path,
+                };
+            }
+            // Multiple fields: render as "unexpected field: a; unexpected field: b"
+            // via Other so all names appear in the diff output.
+            let rendered = fields
+                .iter()
+                .map(|f| {
+                    if path == "/" {
+                        format!("+ unexpected field: {f}")
+                    } else {
+                        format!("+ unexpected field: {f} at {path}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return SchemaErrorShape::Other(rendered);
+        }
     }
 
     // "\"foo\" is a required property"
