@@ -1,6 +1,5 @@
 use model::SchemaRef;
 use serde_json::Value;
-use std::collections::HashSet;
 use std::path::Path;
 
 /// Synthetic URI we register the original OpenAPI document under so the
@@ -63,7 +62,7 @@ pub fn resolve(
         } => {
             let doc = load_json_or_yaml(base_dir, openapi)?;
             let schema = extract_component(&doc, component)?;
-            let mut resolved = inline_refs(schema, &doc, &mut HashSet::new());
+            let mut resolved = rewrite_refs(schema);
             if *strict {
                 apply_strict(&mut resolved);
             }
@@ -78,58 +77,34 @@ fn extract_component(doc: &Value, name: &str) -> Result<Value, SchemaError> {
         .ok_or_else(|| SchemaError::ComponentNotFound(name.to_string()))
 }
 
-/// Walk `schema`, replacing `{"$ref": "#/components/schemas/X"}` with the
-/// resolved subschema from `root`. Tracks visited refs to break cycles; on a
-/// cycle the `$ref` object is preserved but rewritten to point at the
-/// synthetic root URI (`urn:ace:openapi-root#/...`) so the `jsonschema`
-/// crate can resolve it against the registered root document at compile
-/// time. Without that rewrite, the bare `#/components/schemas/X` would
-/// resolve relative to the extracted standalone schema (which has no
-/// `components` section) and fail to compile.
-fn inline_refs(schema: Value, root: &Value, visiting: &mut HashSet<String>) -> Value {
+/// Walk `schema` and rewrite every local `$ref` (`#/...`) to the synthetic
+/// root URI (`urn:ace:openapi-root#/...`). This is O(nodes) with no
+/// recursion explosion — we never expand refs inline. The jsonschema
+/// compiler resolves them against the root document registered via
+/// `with_document`. Replacing the old `inline_refs` expansion avoids
+/// blowing up on large specs (e.g. Stripe's 7 MB OpenAPI file) where full
+/// inlining produces hundreds of MB of JSON.
+fn rewrite_refs(schema: Value) -> Value {
     match schema {
         Value::Object(mut map) => {
             if let Some(Value::String(ref_str)) = map.get("$ref") {
-                let ref_str = ref_str.clone();
-                if let Some(ptr) = local_ref_to_pointer(&ref_str) {
-                    if visiting.contains(&ref_str) {
-                        // Cycle: rewrite to the synthetic root URI so the
-                        // jsonschema compiler can resolve it via the
-                        // registered root document.
-                        map.insert(
-                            "$ref".to_string(),
-                            Value::String(format!("{SYNTHETIC_OPENAPI_ROOT_URI}{ref_str}")),
-                        );
-                        return Value::Object(map);
-                    }
-                    if let Some(target) = root.pointer(&ptr) {
-                        visiting.insert(ref_str.clone());
-                        let inlined = inline_refs(target.clone(), root, visiting);
-                        visiting.remove(&ref_str);
-                        return inlined;
-                    }
+                if ref_str.starts_with('#') {
+                    let rewritten =
+                        format!("{SYNTHETIC_OPENAPI_ROOT_URI}{ref_str}");
+                    map.insert("$ref".to_string(), Value::String(rewritten));
                 }
-                // Non-local ref or pointer not found — leave as-is.
                 return Value::Object(map);
             }
             for val in map.values_mut() {
-                *val = inline_refs(val.take(), root, visiting);
+                *val = rewrite_refs(val.take());
             }
             Value::Object(map)
         }
-        Value::Array(arr) => Value::Array(
-            arr.into_iter()
-                .map(|v| inline_refs(v, root, visiting))
-                .collect(),
-        ),
+        Value::Array(arr) => {
+            Value::Array(arr.into_iter().map(rewrite_refs).collect())
+        }
         other => other,
     }
-}
-
-/// Convert a local JSON Reference like `#/components/schemas/Foo` to a
-/// JSON Pointer `/components/schemas/Foo`.
-fn local_ref_to_pointer(ref_str: &str) -> Option<String> {
-    ref_str.strip_prefix('#').map(|s| s.to_string())
 }
 
 /// Walk `schema` and inject `"additionalProperties": false` on every
@@ -355,54 +330,40 @@ mod tests {
     }
 
     #[test]
-    fn inline_refs_simple() {
-        let root = json!({
-            "components": {
-                "schemas": {
-                    "Address": { "type": "object", "properties": { "city": { "type": "string" } } }
-                }
-            }
-        });
+    fn rewrite_refs_rewrites_local_refs() {
         let schema = json!({
             "type": "object",
             "properties": {
                 "addr": { "$ref": "#/components/schemas/Address" }
             }
         });
-        let result = inline_refs(schema, &root, &mut HashSet::new());
-        let addr = &result["properties"]["addr"];
-        assert_eq!(addr["type"], "object");
-        assert!(addr.get("$ref").is_none());
+        let result = rewrite_refs(schema);
+        assert_eq!(
+            result["properties"]["addr"]["$ref"],
+            format!("{SYNTHETIC_OPENAPI_ROOT_URI}#/components/schemas/Address")
+        );
     }
 
     #[test]
-    fn inline_refs_cycle() {
-        // LinkedList node references itself.
-        let root = json!({
-            "components": {
-                "schemas": {
-                    "Node": {
-                        "type": "object",
-                        "properties": {
-                            "next": { "$ref": "#/components/schemas/Node" }
-                        }
-                    }
-                }
+    fn rewrite_refs_leaves_external_refs_alone() {
+        let schema = json!({ "$ref": "https://example.com/schema.json" });
+        let result = rewrite_refs(schema);
+        assert_eq!(result["$ref"], "https://example.com/schema.json");
+    }
+
+    #[test]
+    fn rewrite_refs_cycle_safe() {
+        // Deep nesting should not stack-overflow — rewrite_refs never recurses
+        // into the value of a $ref, it just rewrites the string.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "next": { "$ref": "#/components/schemas/Node" }
             }
         });
-        let schema = root["components"]["schemas"]["Node"].clone();
-        // Should not stack-overflow. The first-level ref is expanded once;
-        // the nested forward ref is preserved as a $ref string so the
-        // jsonschema compiler can resolve it against the root doc.
-        let result = inline_refs(schema, &root, &mut HashSet::new());
-        // First expansion: next becomes the Node object.
-        assert_eq!(result["properties"]["next"]["type"], "object");
-        // Second level: the nested next ref is preserved (cycle guard fired)
-        // but rewritten to the synthetic root URI so the jsonschema compiler
-        // can resolve it via the registered root document.
-        let nested_next = &result["properties"]["next"]["properties"]["next"];
+        let result = rewrite_refs(schema);
         assert_eq!(
-            nested_next["$ref"],
+            result["properties"]["next"]["$ref"],
             format!("{SYNTHETIC_OPENAPI_ROOT_URI}#/components/schemas/Node")
         );
     }
