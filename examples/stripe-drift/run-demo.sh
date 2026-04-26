@@ -56,7 +56,7 @@ trap cleanup EXIT
 wait_for_port() {
   local port=$1 label=$2 deadline=$(( $(date +%s) + 60 ))
   echo -n "▶ waiting for $label on :$port ..."
-  until curl -sf "http://localhost:$port/v1/customers" -H "Authorization: Bearer sk_test_x" -o /dev/null 2>/dev/null; do
+  until curl -sf --max-time 2 "http://localhost:$port/v1/customers" -H "Authorization: Bearer sk_test_x" -o /dev/null 2>/dev/null; do
     if (( $(date +%s) > deadline )); then
       echo " timed out"; exit 1
     fi
