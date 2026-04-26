@@ -113,7 +113,7 @@ check_diff() {
 
   tmp_json=$(mktemp)
   tmp_text=$(mktemp)
-  "$ACE" diff "$a" "$b" --format json > "$tmp_json" 2>/dev/null || true
+  "$ACE" diff "$a" "$b" --format json --output "$tmp_json" --quiet 2>/dev/null || true
   "$ACE" diff "$a" "$b" > "$tmp_text" 2>/dev/null || true
 
   local ok=1
