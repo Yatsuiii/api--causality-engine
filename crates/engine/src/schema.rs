@@ -150,10 +150,10 @@ fn normalize_nullable(schema: &mut Value) {
         map.insert("anyOf".to_string(), Value::Array(branches));
     } else {
         // enum + nullable: add null to enum so null passes validation.
-        if let Some(Value::Array(enum_vals)) = map.get_mut("enum") {
-            if !enum_vals.contains(&Value::Null) {
-                enum_vals.push(Value::Null);
-            }
+        if let Some(Value::Array(enum_vals)) = map.get_mut("enum")
+            && !enum_vals.contains(&Value::Null)
+        {
+            enum_vals.push(Value::Null);
         }
         // type + nullable: widen scalar type to accept null.
         if let Some(Value::String(t)) = map.get("type").cloned() {
