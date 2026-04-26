@@ -7,28 +7,31 @@
 
 **ACE tells you why the same API workflow took a different path across environments.**
 
+![ACE demo](ace-demo.gif)
+
 Model your flow as a state machine, run it against staging and prod, diff the traces. One command shows which edge matched in staging, which was rejected in prod, and what the response said when it rejected:
 
 ```
 $ ace run scenario.yaml --var base_url=https://staging.api.com -o staging.json
 $ ace run scenario.yaml --var base_url=https://prod.api.com    -o prod.json
 $ ace diff staging.json prod.json
+ACE diff: DRIFT — 2 change(s) across 2 step(s) · staging.json vs prod.json
 
 User 1 / step "checkout"
   ↯ routing diverged
-      trace-a: matched edge a3f2b1c4 → paid
-      trace-b: matched edge 7d81e920 → retry_queued
-               rejected edge a3f2b1c4  [assertions failed: body.status (expected exists: true, got <missing>)]
+      trace-a: matched cart→paid
+      trace-b: matched cart→retry_queued
+               rejected cart→paid  [status: expected 201, got 503]
 
 User 1 / step "poll_status"
-  ⚠ different rejection reason on edge b2c8f019
+  ↯ different rejection reason on edge b2c8f019
       trace-a: body .state: expected "ok", got "pending"
       trace-b: body .state: expected "ok", got "failed"
 
-2 divergence(s) across 5 step(s).
+ACE_SUMMARY: {"v":1,"command":"diff","verdict":"DRIFT","total_steps":5,"divergences":2,"affected_steps":2,"a":"staging.json","b":"prod.json"}
 ```
 
-That is the gap between staging and prod in one screen — not "something is broken" but "the checkout edge that routes to `paid` is being rejected in prod because `body.status` is missing, and the poll_status edge is seeing a different body value." Runnable example in [`examples/env-diff/`](examples/env-diff/).
+That is the gap between staging and prod in one screen — not "something is broken" but "the checkout edge that routes to `paid` is being rejected in prod because it returned 503 instead of 201, and the poll_status edge is seeing a different body value." Runnable example in [`examples/env-diff/`](examples/env-diff/).
 
 Not a Postman replacement. A workflow-testing CLI for multi-step API flows and CI/CD pipelines.
 
@@ -117,7 +120,10 @@ ace run scenario.yaml --junit report.xml   # JUnit output for CI
 ace validate scenario.yaml         # catch graph/variable errors without running
 ace validate scenario.yaml --graph # print resolved state graph
 ace show execution_log.json        # re-render a recorded run (no re-execution)
-ace diff staging.json prod.json    # diff two execution logs — show routing divergences
+ace diff staging.json prod.json              # diff two execution logs
+ace diff a.json b.json --format json         # machine-readable output
+ace diff a.json b.json --mask-extra m.yaml   # suppress dynamic fields at diff time
+ace diff a.json b.json --quiet               # verdict only (ACE_SUMMARY line)
 ace report execution_log.json      # convert a run log to JSON or JUnit
 ace import collection.json         # convert a Postman collection to ACE YAML
 ace mock scenario.yaml             # spin up a mock server from a scenario
@@ -438,6 +444,36 @@ JUnit output works with GitHub Actions, Jenkins, GitLab CI, and anything else th
     path: results.xml
     reporter: java-junit
 ```
+
+## Diff
+
+`ace diff` compares two execution logs and reports where routing decisions diverged between them.
+
+```bash
+ace diff staging.json prod.json                     # text output (default)
+ace diff staging.json prod.json --format json       # machine-readable for CI scripts
+ace diff staging.json prod.json --format markdown   # for PR comments or reports
+ace diff staging.json prod.json --mask-extra m.yaml # suppress dynamic fields at diff time
+ace diff staging.json prod.json --quiet             # ACE_SUMMARY line only
+ace diff staging.json prod.json -o delta.txt        # write to file instead of stdout
+```
+
+**Divergence kinds** ACE reports:
+
+| Glyph | Kind | What it means |
+|-------|------|---------------|
+| `↯` | routing diverged | Different edges matched in A vs B |
+| `↯` | different rejection reason | Same edge rejected in both, but for different reasons |
+| `↯` | body diverged | Response bodies differ (after masking) |
+| `↯` | headers diverged | Response headers differ (after masking) |
+| `↯` | outcome diverged | Step succeeded in one trace, failed in the other |
+| `⊘` | step absent in trace-a / trace-b | Step present in one log but not the other |
+
+**Masking at diff time**: If you didn't set `mask:` in your scenario (e.g. diffing logs someone else produced), `--mask-extra` accepts the same YAML format as the `mask:` block and applies it before comparison. Fields that match on both sides after masking are excluded from body divergences; the step still shows `· masked: <field>` to prove the rule fired. Use `--show-masked` to expand those lines with the pre-mask values.
+
+**Machine-readable output**: Every format except `--format json` writes one `ACE_SUMMARY: <json>` line to stdout. CI scripts can `grep '^ACE_SUMMARY:'` for a machine-readable verdict without parsing the full diff. `--format json` omits the `ACE_SUMMARY` line because the verdict is already in the JSON body.
+
+**Exit codes**: `0` = CLEAN (no divergences), `1` = DRIFT (divergences found), `2` = error.
 
 ## Mock server
 

@@ -290,7 +290,7 @@ pub(crate) fn truncate(s: &str, max_chars: usize) -> String {
     let mut chars = s.chars();
     let head: String = chars.by_ref().take(max_chars).collect();
     if chars.next().is_some() {
-        format!("{}...", head)
+        format!("{head}…")
     } else {
         head
     }
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn truncate_long_string() {
-        assert_eq!(truncate("abcdef", 3), "abc...");
+        assert_eq!(truncate("abcdef", 3), "abc…");
     }
 
     #[test]

@@ -64,9 +64,10 @@ pub fn cmd_diff(args: DiffArgs) -> Result<(), CliError> {
         masked_values: &masked_values,
     };
 
+    let is_json = matches!(format, DiffFormat::Json);
     let text = match format {
-        DiffFormat::Json => render_json_output(&all_divergences, total_steps),
-        DiffFormat::Text => render_text(&all_divergences, total_steps, &summary, &render_ctx),
+        DiffFormat::Json => render_json_output(&all_divergences, &summary),
+        DiffFormat::Text => render_text(&all_divergences, &summary, &render_ctx),
         DiffFormat::Markdown => render_markdown(&all_divergences, &summary, &render_ctx),
     };
 
@@ -76,7 +77,7 @@ pub fn cmd_diff(args: DiffArgs) -> Result<(), CliError> {
                 path: path.clone(),
                 source: e,
             })?,
-            None => print!("{}", text),
+            None => println!("{}", text),
         }
     } else if let Some(ref path) = args.output {
         // --quiet still honors --output: the file gets the full rendered
@@ -89,9 +90,13 @@ pub fn cmd_diff(args: DiffArgs) -> Result<(), CliError> {
 
     // Always emit the machine-readable ACE_SUMMARY line on stdout (even with
     // --quiet, even when --output redirects the rendered diff to a file).
-    // Sinks grep for this line without parsing the trace; never put ANSI
-    // codes on it.
-    println!("{}", summary.as_summary_line());
+    // Exception: --format json outputs a full JSON object that already embeds
+    // the summary (verdict, affected_steps, a, b). Appending ACE_SUMMARY to
+    // that stdout would make it unparseable by `jq` / json.load — so skip it.
+    // Sinks that want the grep-able line use the default text format or --quiet.
+    if !is_json {
+        println!("{}", summary.as_summary_line());
+    }
 
     if all_divergences.is_empty() {
         Ok(())
@@ -822,16 +827,6 @@ fn format_failed_assertions(failed_indices: &[usize], assertions: &[AssertionRes
 // Rendering
 // ---------------------------------------------------------------------------
 
-/// Truncate `s` to `max` chars (boundary-safe), appending `…` when shortened.
-/// Body payloads can be large; the diff is a one-liner, not a full dump.
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let cutoff: usize = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
-    format!("{}…", &s[..cutoff])
-}
-
 /// Summary state shared between the text/JSON renderers and the
 /// `ACE_SUMMARY:` machine-readable line. Built once per `cmd_diff` invocation
 /// so the verdict shown to humans and the JSON consumed by sinks can never
@@ -967,7 +962,6 @@ fn divergence_glyph(kind: &DivergenceKind) -> &'static str {
 
 fn render_text(
     divergences: &[Divergence],
-    _total_steps: usize,
     summary: &DiffSummaryLine,
     ctx: &RenderContext,
 ) -> String {
@@ -1061,8 +1055,14 @@ fn render_divergence_body_text(out: &mut String, kind: &DivergenceKind) {
         }
         DivergenceKind::EdgeOnlyInA { .. } | DivergenceKind::EdgeOnlyInB { .. } => {}
         DivergenceKind::BodyDiverged { a, b } => {
-            out.push_str(&format!("      trace-a: {}\n", truncate(a, 200)));
-            out.push_str(&format!("      trace-b: {}\n", truncate(b, 200)));
+            out.push_str(&format!(
+                "      trace-a: {}\n",
+                crate::render::truncate(a, 200)
+            ));
+            out.push_str(&format!(
+                "      trace-b: {}\n",
+                crate::render::truncate(b, 200)
+            ));
         }
         DivergenceKind::HeadersDiverged { diff } => {
             for d in diff {
@@ -1192,8 +1192,14 @@ fn render_divergence_body_md(out: &mut String, kind: &DivergenceKind) {
         }
         DivergenceKind::EdgeOnlyInA { .. } | DivergenceKind::EdgeOnlyInB { .. } => {}
         DivergenceKind::BodyDiverged { a, b } => {
-            out.push_str(&format!("  - trace-a: `{}`\n", truncate(a, 200)));
-            out.push_str(&format!("  - trace-b: `{}`\n", truncate(b, 200)));
+            out.push_str(&format!(
+                "  - trace-a: `{}`\n",
+                crate::render::truncate(a, 200)
+            ));
+            out.push_str(&format!(
+                "  - trace-b: `{}`\n",
+                crate::render::truncate(b, 200)
+            ));
         }
         DivergenceKind::HeadersDiverged { diff } => {
             for d in diff {
@@ -1205,22 +1211,30 @@ fn render_divergence_body_md(out: &mut String, kind: &DivergenceKind) {
     }
 }
 
-fn render_json_output(divergences: &[Divergence], total_steps: usize) -> String {
+fn render_json_output(divergences: &[Divergence], summary: &DiffSummaryLine) -> String {
     #[derive(Serialize)]
     struct Output<'a> {
         divergences: &'a [Divergence],
-        summary: Summary,
+        summary: JsonSummary<'a>,
     }
     #[derive(Serialize)]
-    struct Summary {
+    struct JsonSummary<'a> {
+        verdict: &'static str,
         total_steps: usize,
         divergences: usize,
+        affected_steps: usize,
+        a: &'a str,
+        b: &'a str,
     }
     let v = Output {
         divergences,
-        summary: Summary {
-            total_steps,
-            divergences: divergences.len(),
+        summary: JsonSummary {
+            verdict: summary.verdict(),
+            total_steps: summary.total_steps,
+            divergences: summary.divergence_count,
+            affected_steps: summary.affected_steps,
+            a: &summary.a,
+            b: &summary.b,
         },
     };
     serde_json::to_string_pretty(&v).expect("json serialize")
@@ -1466,7 +1480,8 @@ mod tests {
             vec![matched_eval("e5f6a7b8", "retry")],
         )]);
         let divs = run_diff(vec![a], vec![b]);
-        let json = render_json_output(&divs, 1);
+        let summary = DiffSummaryLine::new("a.json", "b.json", 1, &divs);
+        let json = render_json_output(&divs, &summary);
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert!(parsed["divergences"].is_array());
         assert!(parsed["summary"]["total_steps"].is_number());
@@ -1614,7 +1629,7 @@ mod tests {
             show_masked: true,
             masked_values: &masked_values,
         };
-        let text = render_text(&divs, 1, &summary, &ctx);
+        let text = render_text(&divs, &summary, &ctx);
         assert!(
             text.contains("sub_abc") && text.contains("sub_xyz"),
             "--show-masked must surface pre-mask values; got:\n{text}"

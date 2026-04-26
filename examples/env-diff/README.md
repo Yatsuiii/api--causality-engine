@@ -32,19 +32,21 @@ Requires `ace` on `$PATH`. If you're running from source: `ACE=target/release/ac
 ════════════════════════════════════════════════════════════════
  3/3  ace diff staging.json prod.json
 ════════════════════════════════════════════════════════════════
+ACE diff: DRIFT — 3 change(s) across 3 step(s) · /tmp/ace-env-diff/staging.json vs /tmp/ace-env-diff/prod.json
+
 User 1 / step "checkout"
   ↯ routing diverged
-      trace-a: matched edge 093b1848 → poll_status
-      trace-b: matched edge 084ba606 → retry_queued
-               rejected edge 093b1848  [assertions failed: body.status (expected exists: true, got <missing>)]
+      trace-a: matched checkout→poll_status
+      trace-b: matched checkout→retry_queued
+               rejected checkout→poll_status  [assertions failed: body.status (expected exists: true, got <missing>)]
 
 User 1 / step "poll_status"
-  ✗ step absent in trace-b
+  ⊘ step absent in trace-b
 
 User 1 / step "retry_queued"
-  ✗ step absent in trace-a
+  ⊘ step absent in trace-a
 
-3 divergence(s) across 4 step(s).
+ACE_SUMMARY: {"v":1,"command":"diff","verdict":"DRIFT","total_steps":4,"divergences":3,"affected_steps":3,"a":"/tmp/ace-env-diff/staging.json","b":"/tmp/ace-env-diff/prod.json"}
 ```
 
 Four things the diff is telling you, in one screen:
@@ -54,9 +56,10 @@ Four things the diff is telling you, in one screen:
    is missing from the response. The rejection reason carries the offending
    assertion — description, expected, actual — so you do not have to
    cross-reference the trace to know what changed.
-2. **The edge id is stable.** `093b1848` hashes the condition, not the source
-   line. Grep for it, track it in git, open an issue against it, assert on it
-   in CI — it survives edits to the YAML as long as the semantics don't change.
+2. **The routing is self-describing.** Edge labels show `from→to` state names so
+   you can read the diff without cross-referencing the scenario file. The
+   `ACE_SUMMARY:` line at the bottom is machine-readable JSON — CI scripts can
+   `grep '^ACE_SUMMARY:'` for a structured verdict without parsing the full diff.
 3. **The downstream is consequence, not cause.** `poll_status` is absent in prod
    and `retry_queued` is absent in staging because of the upstream routing
    divergence. ACE reports them so you know the scope, but the root cause is
