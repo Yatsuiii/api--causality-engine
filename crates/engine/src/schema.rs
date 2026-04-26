@@ -60,12 +60,19 @@ pub fn resolve(
             component,
             strict,
         } => {
-            let doc = load_json_or_yaml(base_dir, openapi)?;
-            let schema = extract_component(&doc, component)?;
-            let mut resolved = rewrite_refs(schema);
+            let mut doc = load_json_or_yaml(base_dir, openapi)?;
             if *strict {
-                apply_strict(&mut resolved);
+                // Inject additionalProperties:false into every component schema
+                // in the root doc so it takes effect wherever refs resolve.
+                // Mutating the doc here is safe — we loaded a fresh copy.
+                if let Some(Value::Object(schemas)) = doc.pointer_mut("/components/schemas") {
+                    for v in schemas.values_mut() {
+                        apply_strict(v);
+                    }
+                }
             }
+            let schema = extract_component(&doc, component)?;
+            let resolved = rewrite_refs(schema);
             Ok((resolved, Some(doc)))
         }
     }
