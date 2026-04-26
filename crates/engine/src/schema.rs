@@ -220,7 +220,7 @@ pub fn apply_strict(schema: &mut Value) {
 }
 
 // ---------------------------------------------------------------------------
-// Validation-error reshaping (P0.4 task 4 — schema-failure renderer)
+// Validation-error reshaping — human-readable schema failure messages
 // ---------------------------------------------------------------------------
 
 /// Structured shape for a single jsonschema validation error.

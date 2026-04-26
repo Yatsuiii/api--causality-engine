@@ -127,7 +127,6 @@ ace diff a.json b.json --quiet               # verdict only (ACE_SUMMARY line)
 ace report execution_log.json      # convert a run log to JSON or JUnit
 ace import collection.json         # convert a Postman collection to ACE YAML
 ace mock scenario.yaml             # spin up a mock server from a scenario
-ace docs scenario.yaml             # generate API docs from a scenario
 ```
 
 ## Scenario

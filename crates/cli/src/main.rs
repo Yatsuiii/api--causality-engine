@@ -1,5 +1,4 @@
 mod diff;
-mod docs;
 mod error;
 mod glyph;
 mod import;
@@ -178,16 +177,6 @@ enum Commands {
         minimal: bool,
     },
 
-    /// Generate API documentation from a scenario
-    Docs {
-        /// Path to the scenario YAML file
-        scenario: String,
-
-        /// Output file (default: stdout)
-        #[arg(short, long)]
-        output: Option<String>,
-    },
-
     /// Diff two execution logs and show routing divergences
     Diff {
         /// Path to trace A (e.g. staging.json)
@@ -281,7 +270,6 @@ async fn main() {
         Commands::Init { output, minimal } => init::cmd_init(&output, minimal),
         Commands::Import { collection, output } => import::cmd_import(&collection, &output),
         Commands::Mock { scenario, port } => mock::cmd_mock(&scenario, port).await,
-        Commands::Docs { scenario, output } => docs::cmd_docs(&scenario, output),
         Commands::Diff {
             trace_a,
             trace_b,

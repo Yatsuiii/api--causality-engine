@@ -20,7 +20,7 @@ pub struct DiffArgs {
     pub mask_extra: Option<String>,
     /// Expand `· masked: …` lines with the pre-mask values from each side.
     /// Requires raw `response_body` to have been retained — automatic when
-    /// scenario `mask:` is non-empty (see P0.3 carryover note).
+    /// scenario `mask:` is non-empty.
     pub show_masked: bool,
     /// Suppress everything except the trailing `ACE_SUMMARY:` line.
     pub quiet: bool,
@@ -731,7 +731,7 @@ fn build_route_info(step: &StepLog) -> RouteInfo {
 
 /// Render an edge as `from→to` with an optional ` (tag)` suffix. Preferred
 /// over the bare 8-char hash for human-facing output. Falls back to the hash
-/// when `from` is unavailable (legacy traces predating P0.4).
+/// when `from` is unavailable (e.g. traces produced by older versions).
 fn render_edge_label(from: &str, to: &str, tag: Option<&str>, fallback_hash: &str) -> String {
     if from.is_empty() && to.is_empty() {
         return fallback_hash.to_string();
@@ -898,11 +898,10 @@ impl DiffSummaryLine {
 }
 
 // ---------------------------------------------------------------------------
-// Grouped structured renderer (P0.4 task 3)
+// Grouped structured renderer
 //
-// Both text and markdown output share this intermediate. A single audit of
-// wording lands in both formats simultaneously, and there is no per-format
-// duplication of grouping / ordering logic.
+// Both text and markdown output share this intermediate so wording changes
+// land in both formats simultaneously, with no per-format duplication.
 // ---------------------------------------------------------------------------
 
 /// Build the per-step blocks. Divergences inside the same `(user, step,
@@ -1735,10 +1734,9 @@ mod tests {
 
     #[test]
     fn body_diff_suppressed_when_only_masked_field_differs() {
-        // The most important assertion: if the only difference between two
-        // bodies is a field that scenario masking already replaced with the
-        // same placeholder, the diff must be silent. This is the whole point
-        // of P0.3 — without this, masking is decorative.
+        // If the only difference between two bodies is a field that scenario
+        // masking already replaced with the same placeholder, the diff must
+        // be silent — otherwise masking is decorative.
         let a = make_log(vec![step_with_body(
             "fetch",
             r#"{"id":"sub_1","current_period_end":1700000000}"#,

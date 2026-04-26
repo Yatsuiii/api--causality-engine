@@ -25,10 +25,9 @@ pub fn cmd_show(path: &str, deprecated_alias: bool) -> Result<(), CliError> {
         logs.len()
     );
 
-    // P0.4 task 7: name the scenario that produced the log. Three logs in
-    // /tmp/ shouldn't be indistinguishable just because they all came from
-    // `ace run ... --output something.json`. Old logs without scenario
-    // metadata fall through silently — better than rendering "unknown".
+    // Name the scenario that produced the log — three logs in /tmp/ shouldn't
+    // be indistinguishable. Old logs without scenario metadata fall through
+    // silently rather than rendering "unknown".
     if let Some(first) = logs.first()
         && let Some(name) = &first.scenario_name
     {

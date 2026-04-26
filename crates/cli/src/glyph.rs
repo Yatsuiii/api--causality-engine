@@ -1,8 +1,7 @@
 //! Single-source-of-truth glyph + verdict vocabulary for CLI rendering.
 //!
-//! P0.4 audit: pick five glyphs, document them, use them everywhere. New
-//! renderers must call into this module rather than hard-coding symbols so
-//! the legend stays internalizable in one pass:
+//! Five glyphs, one place. New renderers must call into this module rather
+//! than hard-coding symbols so the legend stays consistent:
 //!
 //! | Glyph | Meaning                                                 |
 //! |-------|---------------------------------------------------------|
@@ -13,9 +12,8 @@
 //! | `·`   | informational note (masked, skipped, lost-tie)          |
 
 // Plain glyphs are consumed inline in `format!` strings; the colored helpers
-// are reserved for the structured renderer landing in Chunks B/C. Allowing
-// dead_code keeps the legend a single source of truth without forcing every
-// callsite to migrate in one PR.
+// are available for future renderers. Allowing dead_code keeps the legend a
+// single source of truth without forcing every callsite to use every helper.
 use colored::{ColoredString, Colorize};
 
 #[allow(dead_code)]
@@ -52,7 +50,7 @@ pub fn note() -> ColoredString {
 }
 
 /// Machine-readable summary line schema version. Bump on breaking changes
-/// (renamed/removed fields). Sinks (P1.8/P1.9) must ignore unknown keys.
+/// (renamed/removed fields). Downstream consumers must ignore unknown keys.
 pub const SUMMARY_SCHEMA_VERSION: u32 = 1;
 
 /// Prefix for the single-line JSON summary emitted by `ace run` / `ace diff`.
@@ -64,10 +62,9 @@ pub const SUMMARY_PREFIX: &str = "ACE_SUMMARY: ";
 mod tests {
     use super::*;
 
-    /// Lint test: no other glyphs should leak into the diff/render renderer
-    /// source. P0.4 task 9 audit — keeping the legend a single source of
-    /// truth means the next renderer change can't drift the vocabulary.
-    /// `⚠` and `⋯` are explicitly forbidden (replaced by `↯` and `·`).
+    /// Lint: no other glyphs should leak into the diff/render renderer source.
+    /// Keeping the legend a single source of truth means renderer changes
+    /// can't drift the vocabulary. `⚠` and `⋯` are explicitly forbidden.
     #[test]
     fn forbidden_glyphs_absent_from_renderers() {
         let files = [include_str!("diff.rs"), include_str!("render.rs")];

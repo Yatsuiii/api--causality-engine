@@ -112,8 +112,8 @@ pub struct StepLog {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_body: Option<String>,
     /// JSON-parsed response body with `mask:` rules applied. Present when the
-    /// scenario defines at least one mask rule. Used by `ace diff` (P1.5+) to
-    /// compare body content without per-request noise.
+    /// scenario defines at least one mask rule. Used by `ace diff` to compare
+    /// body content without per-request noise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_body_normalized: Option<serde_json::Value>,
     /// JSONPath patterns from `mask:` rules that matched at least one node in
