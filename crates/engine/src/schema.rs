@@ -89,8 +89,7 @@ fn rewrite_refs(schema: Value) -> Value {
         Value::Object(mut map) => {
             if let Some(Value::String(ref_str)) = map.get("$ref") {
                 if ref_str.starts_with('#') {
-                    let rewritten =
-                        format!("{SYNTHETIC_OPENAPI_ROOT_URI}{ref_str}");
+                    let rewritten = format!("{SYNTHETIC_OPENAPI_ROOT_URI}{ref_str}");
                     map.insert("$ref".to_string(), Value::String(rewritten));
                 }
                 return Value::Object(map);
@@ -100,9 +99,7 @@ fn rewrite_refs(schema: Value) -> Value {
             }
             Value::Object(map)
         }
-        Value::Array(arr) => {
-            Value::Array(arr.into_iter().map(rewrite_refs).collect())
-        }
+        Value::Array(arr) => Value::Array(arr.into_iter().map(rewrite_refs).collect()),
         other => other,
     }
 }
