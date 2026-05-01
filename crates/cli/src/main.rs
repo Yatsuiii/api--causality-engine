@@ -128,7 +128,7 @@ enum Commands {
         /// Path to the scenario YAML file
         scenario: String,
         /// Print the resolved state graph preview
-        #[arg(long, default_value_t = true)]
+        #[arg(long, default_value_t = false)]
         graph: bool,
     },
 

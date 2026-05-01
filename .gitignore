@@ -19,3 +19,4 @@ __pycache__/
 env/
 venv/
 .codex
+CLAUDE.md

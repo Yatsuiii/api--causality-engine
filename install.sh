@@ -44,7 +44,11 @@ curl -fsSL "$BASE_URL/SHA256SUMS"   -o "$TMPDIR/SHA256SUMS"
 
 # Verify checksum
 cd "$TMPDIR"
-grep "$TARGET" SHA256SUMS | sha256sum -c -
+if command -v sha256sum >/dev/null 2>&1; then
+  grep "$TARGET" SHA256SUMS | sha256sum -c -
+else
+  grep "$TARGET" SHA256SUMS | shasum -a 256 -c -
+fi
 cd - > /dev/null
 
 tar -xz -C "$TMPDIR" -f "$TMPDIR/ace.tar.gz"
